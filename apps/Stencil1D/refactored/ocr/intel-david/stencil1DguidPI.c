@@ -17,6 +17,8 @@
 #include "stencil1D.h"
 #include <extensions/ocr-labeling.h>
 
+#include <stdlib.h>
+
 #define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
 
 typedef struct{

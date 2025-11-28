@@ -274,9 +274,12 @@ u8 ocrEdtTemplateDestroy(ocrGuid_t guid);
  *      - 0: successful
  *
  **/
-u8 ocrEdtCreate(ocrGuid_t * guid, ocrGuid_t templateGuid,
-                u32 paramc, u64* paramv, u32 depc, ocrGuid_t *depv,
-                u16 properties, ocrHint_t *hint, ocrGuid_t *outputEvent);
+// u8 ocrEdtCreate(ocrGuid_t * guid, ocrGuid_t templateGuid,
+//                 u32 paramc, u64* paramv, u32 depc, ocrGuid_t *depv,
+//                 u16 properties, ocrHint_t *hint, ocrGuid_t *outputEvent);
+u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
+                u64 *paramv, u32 depc, ocrGuid_t *depv, u16 properties,
+                ocrGuid_t affinity, ocrGuid_t *outputEvent);
 
 /**
  * @brief Destroy an EDT

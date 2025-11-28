@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 
-set(OCR_SOURCES
-    src/ocr_runtime.c
+set(ARTS_OCR_SOURCES
+    src/arts-ocr.c
 )
 
-add_library(ocr SHARED ${OCR_SOURCES})
+add_library(ocr SHARED ${ARTS_OCR_SOURCES})
 
 set_target_properties(ocr PROPERTIES
     OUTPUT_NAME ocr

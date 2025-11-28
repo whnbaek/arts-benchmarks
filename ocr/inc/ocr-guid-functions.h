@@ -39,7 +39,8 @@
  * false otherwise
  */
 static inline bool ocrGuidIsNull(ocrGuid_t guid){
-    return (guid.guid == 0x0);
+  // return (guid.guid == 0x0);
+  return (guid == 0x0);
 }
 
 /**
@@ -50,7 +51,8 @@ static inline bool ocrGuidIsNull(ocrGuid_t guid){
  * false otherwise
  */
 static inline bool ocrGuidIsUninitialized(ocrGuid_t guid){
-    return (guid.guid == -2);
+  // return (guid.guid == -2);
+  return (guid == -2);
 }
 
 /**
@@ -61,7 +63,8 @@ static inline bool ocrGuidIsUninitialized(ocrGuid_t guid){
  * false otherwise
  */
 static inline bool ocrGuidIsError(ocrGuid_t guid){
-    return (guid.guid == -1);
+  // return (guid.guid == -1);
+  return (guid == -1);
 }
 
 
@@ -78,7 +81,8 @@ static inline bool ocrGuidIsError(ocrGuid_t guid){
  * false otherwise
  */
 static inline bool ocrGuidIsEq(ocrGuid_t g1, ocrGuid_t g2){
-    return g1.guid == g2.guid;
+  // return g1.guid == g2.guid;
+  return g1 == g2;
 }
 
 /**
@@ -93,7 +97,8 @@ static inline bool ocrGuidIsEq(ocrGuid_t g1, ocrGuid_t g2){
  * false otherwise
  */
 static inline bool ocrGuidIsLt(ocrGuid_t g1, ocrGuid_t g2){
-    return g1.guid < g2.guid;
+  // return g1.guid < g2.guid;
+  return g1 < g2;
 }
 
 /* Macros for printing 64-bit GUIDS */

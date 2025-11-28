@@ -46,23 +46,27 @@ typedef struct {
 #else
 
 #define GUID_BIT_COUNT 64
-typedef struct {
-    intptr_t guid;
-} ocrGuid_t;
+// typedef struct {
+//     intptr_t guid;
+// } ocrGuid_t;
+typedef intptr_t ocrGuid_t;
 
 #endif
 
 /* Defined vals for 64-bit GUIDs */
 #if GUID_BIT_COUNT == 64
 
-#define NULL_GUID_INITIALIZER {.guid = 0x0}
-#define NULL_GUID ((ocrGuid_t)NULL_GUID_INITIALIZER)
+// #define NULL_GUID_INITIALIZER {.guid = 0x0}
+// #define NULL_GUID ((ocrGuid_t)NULL_GUID_INITIALIZER)
+#define NULL_GUID ((ocrGuid_t)0x0)
 
-#define UNINITIALIZED_GUID_INITIALIZER {.guid = -2}
-#define UNINITIALIZED_GUID ((ocrGuid_t)UNINITIALIZED_GUID_INITIALIZER)
+// #define UNINITIALIZED_GUID_INITIALIZER {.guid = -2}
+// #define UNINITIALIZED_GUID ((ocrGuid_t)UNINITIALIZED_GUID_INITIALIZER)
+#define UNINITIALIZED_GUID ((ocrGuid_t)(-2))
 
-#define ERROR_GUID_INITIALIZER {.guid = -1}
-#define ERROR_GUID ((ocrGuid_t)ERROR_GUID_INITIALIZER)
+// #define ERROR_GUID_INITIALIZER {.guid = -1}
+// #define ERROR_GUID ((ocrGuid_t)ERROR_GUID_INITIALIZER)
+#define ERROR_GUID ((ocrGuid_t)(-1))
 
 /* Defined vals for 128-bit GUIDs */
 #elif GUID_BIT_COUNT == 128

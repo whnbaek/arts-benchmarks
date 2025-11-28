@@ -18,6 +18,8 @@
 #include "stencil1D.h"
 #include <extensions/ocr-labeling.h>
 
+#include <stdlib.h>
+
 #define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
 
 //dss: we need to switch from compile time constants to run time parameters.  Chandra's Stencil codes do that...

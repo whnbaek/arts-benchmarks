@@ -20,6 +20,8 @@ More information is in README
 #include "stdio.h"  //needed for printf debugging
 #include "math.h" //for integer abs
 
+#include <stdlib.h>
+
 #include "reduction.h"
 
 #define PRECONDITIONER  //undefine if you want to run without the precondition

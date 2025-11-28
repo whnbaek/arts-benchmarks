@@ -2,6 +2,17 @@ cmake_minimum_required(VERSION 3.16)
 
 project(arts_benchmarks LANGUAGES C CXX)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+	message(STATUS "Setting build type to 'Release' as none was specified")
+	set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+	set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
+if(NOT DEFINED CMAKE_INSTALL_PREFIX OR CMAKE_INSTALL_PREFIX STREQUAL "" OR CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+	set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.install" CACHE PATH "Install path prefix" FORCE)
+	set(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT FALSE)
+endif()
+
 option(ARTS_AUTO_INIT_SUBMODULE
 	"Automatically initialize the external/arts submodule when it is missing"
 	ON
@@ -9,6 +20,7 @@ option(ARTS_AUTO_INIT_SUBMODULE
 
 set(ARTS_SUBMODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/arts")
 set(ARTS_SUBMODULE_ENTRY "${ARTS_SUBMODULE_PATH}/CMakeLists.txt")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Ensure the ARTS submodule is checked out before attempting to add it.
 if(NOT EXISTS "${ARTS_SUBMODULE_ENTRY}")
@@ -55,3 +67,4 @@ endif()
 add_subdirectory(${ARTS_SUBMODULE_PATH} ${CMAKE_BINARY_DIR}/external/arts)
 
 add_subdirectory(ocr)
+add_subdirectory(apps)

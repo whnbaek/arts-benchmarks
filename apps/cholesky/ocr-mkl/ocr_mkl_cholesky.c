@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <time.h>
 
+#include <sys/time.h>
+
 #ifndef TG_ARCH
 
 // Uncomment the below two lines to include EDT profiling information
