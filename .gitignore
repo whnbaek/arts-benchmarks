@@ -1,4 +1,4 @@
-build
-.install
-.cache
-.vscode
+build/
+.install/
+.cache/
+.vscode/

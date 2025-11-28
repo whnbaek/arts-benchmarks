@@ -53,3 +53,5 @@ endif()
 
 # Build the arts project directly from this superbuild.
 add_subdirectory(${ARTS_SUBMODULE_PATH} ${CMAKE_BINARY_DIR}/external/arts)
+
+add_subdirectory(ocr)

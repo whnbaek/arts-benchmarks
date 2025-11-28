@@ -1,3 +1,0 @@
-hc                  - flat and random work-stealing scheduler
-priority            - priority-based work-sharing scheduler
-null                - null implementation (temporary)

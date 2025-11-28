@@ -1,2 +1,0 @@
-fsim    - fsim-based computation platform implementation
-pthread - pthread-based computation platform implementation
