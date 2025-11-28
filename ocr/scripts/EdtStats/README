@@ -1,0 +1,45 @@
+##
+# License
+##
+
+This file is subject to the license agreement located in the file
+LICENSE and cannot be distributed without it.  This notice
+cannot be removed or modified.
+
+##
+# Usage Instructions
+##
+
+This script postprocesses log data and generates a console
+summary, and .csv readout of data overhead and execution
+time overhead per EDT observed during app execution.  This
+can be used as a lightweight way to get basic overhead data
+and identify "hot" EDTs in an application.
+
+Instructions:
+
+-In ocr/build/common.mk:
+    -Debug option needs to be set at DEBUG_LVL_VERB
+    -DOCR_ENABLE_EDT_NAMING must be set.
+    -DOCR_ENABLE_VISUALIZER must be set.
+
+Script Instructions:
+
+-Navigate to desired application directory.
+
+-Before running an application an environment variable must be set via:
+    -export ENABLE_VISUALIZER=yes
+
+-NOTE: The above env. variable will issue -DOCR_ENABLE_EDT_NAMING and
+  -DOCR_OCR_ENABLE_VISUALIZER to the targeted app only if you are compiling
+  your program with the default common Makefile.  If you are using a custom
+  Makefile, you must issue these compiler flags explicitely and use the config-generator
+  script to create a config file using guid type COUNTED_MAP.
+
+-Application logging output must be redirected to
+ to the /ocr/scripts/EdtStats directory
+    The command would look like: make -f Makefile.x86 run > ~/xstack/ocr/scripts/EdtStats/<log_ouput_file_name>
+
+-Navigate to ~/xstack/ocr/scripts/EdtStats, and run: python edtStats.py <log_ouput_file_name>
+
+-Output will be a .csv file which can be opened in a spreadsheet program.

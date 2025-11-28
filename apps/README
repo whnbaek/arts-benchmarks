@@ -1,0 +1,11 @@
+###
+# Introduction
+# This is not a real README. The complete and up-to-date instructions
+# on all applications/kernels related matters is maintained on the wiki.
+# Please go to (https://xstack.exascale-tech.com/wiki/index.php/Main_Page#Applications)
+# where you will find the instructions on how to:
+# - become an app contributor.
+# - browse the current application and kernel examples.
+# - learn about developing an app in each of the programming models.
+# For each individual appl version there will be a traditional README in its directory
+###

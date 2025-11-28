@@ -1,0 +1,4 @@
+tmproot/
+build_*/
+# Vim swap files
+.*.swp

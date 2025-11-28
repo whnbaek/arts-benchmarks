@@ -1,0 +1,354 @@
+
+The README file contains information about OCR micro-benchmarks
+and is organized in the following sections:
+
+* OCR Micro-Benchmarks
+* Getting Started
+* Compile and Run Micro-benchmarks
+* Extracting plots from runs
+* Adding new Micro-Benchmarks
+
+
+************************
+* OCR Micro-Benchmarks
+************************
+
+** Why Micro-benchmarks ?
+
+Micro-benchmarks can be ran to study the scalability of OCR, compare
+different OCR instantiations using distinct configuration files
+or compare various OCR implementations.
+
+** Expectations
+
+The Micro-Benchmarks and accompanying scripts should be seen as tools
+for OCR runtime developers to understand runtime behaviors and issues
+occurring in specific situations.
+
+As of now, the micro-benchmark suite as a whole is not meant to be a
+comprehensive set of benchmarks representative of OCR performances.
+Some benchmarks are designed as pathological cases and made grossly
+inefficient in one way or another to stress the runtime implementation.
+
+
+*******************
+* Getting Started
+*******************
+
+** Current Limitations
+
+- Only tested for OCR x86
+
+** Setting up OCR build
+
+Depending on micro-benchmarks, OCR may need to be configured
+to accomodate those large benchmarks.
+
+Relevant 'CFLAGS' to enable in 'ocr/build/common.mk' may include
+
+INIT_DEQUE_CAPACITY
+OCR_MAX_MULTI_SLOT
+
+** Setting up micro-benchmarks
+
+- Check the OCR configuration file the runtime uses
+    - Make sure you understand what the configuration file sets up.
+    - It's usually a good idea to provide the configuration files along
+    with the results as well as mangling file names with relevant
+    configuration details.
+
+- Check the load on the machine
+    - Make sure you have a fully dedicated access to the node you're using.
+
+- Check effect of thread binding
+    - On hyper-threaded (HT) system, binding OCR comp-platform to cores may
+    significantly affect performances. Make sure to reach some understanding
+    of HT behavior on your system before reporting numbers.
+
+
+************************************
+* Compile and Run Micro-benchmarks
+************************************
+
+**
+** make-based single micro-benchmark invocation
+**
+
+Makefile provides an easy way to both compile and run a micro-benchmark
+
+- Compile an OCR benchmark named 'myBench':
+
+    make benchmark build/myBench PROG=ocr/myBench.c
+
+- Run an OCR benchmark named 'myBench':
+
+    make run build/myBench
+
+- Compile and run specifying an OCR configuration file:
+
+    make run OCR_CONFIG=/path/to/cfgfile build/myBench
+
+Micro-benchmark can be customized through compile time definitions. The default values
+for micro-benchmarks parameters are defined in the 'defaults.mk' file. These definitions
+apply indistinctively to any micro-benchmark. However, since the benchmarks can be very
+different in nature default values can be overriden.
+
+- Make command default parameter override
+
+In this example, the compile time definition 'NB_INSTANCES' originally defined in the
+'defaults.mk' file is set to 100 for the 'myBench' micro-benchmark from the command line.
+
+    NB_INSTANCES=100 make benchmark build/myBench PROG=ocr/myBench.c
+
+**
+** Driver-based micro-benchmark invocation
+**
+
+The micro-benchmark performance driver under 'scripts/perfDriver.sh' allows to compile and run
+one, several or all micro-benchmarks.
+
+The main interest of the driver is that it can be used to automate various scaling experiments
+and takes care of compiling, running, collecting, aggregating and outputing metrics in a digest
+format.
+
+The directory containing the script files is to be specified through the environment variable
+SCRIPT_ROOT.
+
+The following environment variables can be customized:
+
+NB_RUN                  Specifies how many times the benchmark should be ran
+CORE_SCALING            String-list of number of cores to use for scaling experiment ex: "1 2 4 8"
+
+LOGDIR                  Specify the log folder to output to
+RUNLOG_FILENAME_BASE    Base name for run log files (ex: myrunlog)
+REPORT_FILENAME_BASE    Base name for report files  (ex: myreport)
+
+- Display help
+
+    SCRIPT_ROOT=./scripts ./scripts/perfDriver.sh -help
+
+- Invoke a benchmark with default values:
+
+    SCRIPT_ROOT=./scripts ./scripts/perfDriver.sh myBench
+
+Compile the 'myBench' benchmark with default values from 'defaults.mk'. The driver performs
+a core scaling experiment according to the values from the CORE_SCALING environment variables.
+Each core scaling experiment is ran 'NB_RUN' times. The driver logs all the runs and outputs
+a report containing for each 'core' value the average of the metric, its standard deviation
+the number of runs, and speed-up compared to the first 'core' value.
+
+** Scaling report example:
+
+    1   1148805.904  9547.354    10   1.000
+    2   2076150.192  10542.415   10   1.807
+    4   3761222.550  8262.419    10   3.274
+
+Limitation: Currently the driver only support reporting the 'throughput' metric the
+micro-benchmarks are outputing.
+
+- Invoke multiple benchmarks with default values:
+
+    SCRIPT_ROOT=./scripts ./scripts/perfDriver.sh myBench myOtherBench
+
+Does exactly the same as the previous example but for each benchmark.
+
+
+** Micro-benchmark parameterization
+
+The driver supports three main modes of operation. When invoked without any options the driver
+compiles and run all micro-benchmarks with default values from the 'defaults.mk' file. When used
+with the 'defaultfile' option, each test is ran with its own customized values. Lastly, the sweep
+option allows to perform a multitude of customized runs for a benchmark.
+
+** Sweeping experiments:
+
+*** The 'sweepfile' options
+
+A sweeping experiment varies values of definitions. The definitions are stored
+in a 'sweep' file where each line declares a set of definitions.
+
+Example:
+
+A sweep file defining two definition sets:
+
+    NB_INSTANCES=100
+    NB_INSTANCES=200
+
+The driver is invoked with the 'sweepfile' option as follow:
+
+    SCRIPT_ROOT=./scripts ./scripts/perfDriver.sh -sweepfile mydefs.sweep myBench myOtherBench
+
+The '-sweepfile' option causes the driver to load the 'mydefs.sweep' file
+and for each benchmark and each definition line, compile and run the benchmark.
+
+
+*** The 'sweep' options
+
+The sweep option let the driver lookup under the 'configSweep/' folder for a '.sweep'
+file named after a micro-benchmark name,
+
+For instance, the 'myBench' benchmark may have a sweep file named 'myBench.sweep'.
+
+The driver can then be invoked with the sweep option as follow:
+
+    SCRIPT_ROOT=./scripts ./scripts/perfDriver.sh -sweep myBench
+
+The '-sweep' option causes the driver to try and locate the 'configSweep/myBench.sweep'
+and if found compile and run the benchmark for each definition line.
+
+
+*** The 'defaultfile' options
+
+A "default file" is a text file containing one line per benchmark that specifies a set of
+definition values. Each line begins with the name of the micro-benchmark followed by a
+sequence of definition.
+
+Example:
+
+myBench NB_INSTANCES=100
+myOtherBench NB_INSTANCES=200 NB_ITER=2000
+
+The main advantage of a default file is to allow users to specify different values of a same
+definition but for different tests only. This is useful for instance to "calibrate" the granularity
+of each individual micro-benchmark for a specific machine.
+
+
+** Define Resolution order
+
+The driver performs a benchmark's defines resolution in the following order:
+
+    sweep => sweepfile => defaultfile => defaults.mk
+
+The order in which options are passed does NOT matter !
+
+Example 1:
+
+    ./scripts/perfDriver.sh -sweepfile mysweep -sweep myBench
+
+The driver first looks up for a sweep file 'configSweep/myBench.sweep'.
+If this sweep file does not exist, it uses the sweep file from the 'sweepfile' option.
+
+Example 2:
+
+    ./scripts/perfDriver.sh -defaultfile foobar.default myBench
+
+The driver looks up for a 'myBench' entry in the default defines file.
+If none is found defines from 'defaults.mk' are used.
+
+
+**
+** Customizing OCR configuration files
+**
+
+The performance driver uses a script to generate OCR configuration
+files to be used for benchmarking. The customization of the
+generated file is easily achieved through environment variables.
+
+Whatever the CFG generator script's options are, the driver can pick
+user-defined values for those from the environment and call the
+generator with them.
+
+The generator script is located under 'ocr/scripts/Configs/config-generator.py'
+and the option can be listed through the '--help' option.
+
+For instance, among other things the CFG generator script defines the
+following option to select an allocator:
+
+    --alloctype       {mallocproxy,tlsf,simple}
+
+To override the generator option's default values, one must define an
+environment variable whose name starts with "CFGARG_" followed by the
+generator's option name in upper case.
+
+For example, the 'alloctype' options can be overriden through an
+environment variable named "CFGARG_ALLOCTYPE"
+
+    export CFGARG_ALLOCTYPE="mallocproxy"
+
+Once this environment variable is defined, any micro-benchmark ran through
+the performance driver in this environment will be using a generated CFG file
+that uses 'mallocproxy' as allocator.
+
+
+******************************
+* Extracting plots from runs
+******************************
+
+** Generating worker scaling throughput-based plots
+
+The performance driver outputs scaling reports that can be
+further processed for automated plotting through gnuplot.
+
+Three plotting scripts are available under the'scripts/' folder:
+
+1- plotCoreScalingSingleRun.sh
+
+    Allows to plot a single scaling report
+
+2- plotCoreScalingMultiRun.sh
+
+    Allows to overlay multiple scaling reports
+
+3- plotCoreScalingTrendRun.sh
+
+    Allows 'trend' plotting from multiple scaling reports
+
+The first two display core scaling on the x-axis and throughput on the y-axis.
+
+The third allows to plot each individual report on a x-axis tick (in the order
+they were passed on the command line) while the y-axis is the throughput. There
+is then a single curve per core count. For example, let say you do a daily
+core-scaling run for 1,2,4,8 cores and invoke 'plotCoreScalingTrendRun.sh'
+with all the daily reports properly ordered as command line arguments. The plot
+shows 4 curves, where each x-axis tick is a day, and each day has 4 data point
+representing the throughput for 1,2,4,8 cores.
+
+Examples:
+
+Generate a single report plot:
+    ./scripts/plotCoreScalingSingleRun.sh myReport
+
+Generate a multi report plot:
+    ./scripts/plotCoreScalingMultiRun.sh myReport1 myReport2
+
+Generate a daily trend report plot:
+    ./scripts/plotCoreScalingTrendRun.sh myReportMon myReportTue myReportWed
+
+
+******************************
+* Adding micro-benchmarks
+******************************
+
+- Each micro-benchmark must declare a header with the following format:
+
+// DESC: The purpose of the benchmark
+// TIME: What the benchmark times
+// FREQ: The granularity of the timed operation
+
+And a follow up comment block that lists all the parameters used
+by the micro-benchmark:
+
+// VARIABLES:
+// - VAR1_NAME
+// - VAR2_NAME
+
+- Micro-benchmark parameterization: Whenever possible make use of one of the
+predefined parameters that can be found in 'default.mk'. For example, if
+you'd like to parameterize your micro-benchmark to use a different number of
+datablocks, reuse the 'DB_NBS' parameter pre-defined in 'default.mk'.
+
+- To ensure compatibility with post-processing tools, all timings and results
+printing must be done through the timer interface defined by the framework.
+The timer declarations can be found are defined under 'performance-tests/inc/helper.h'.
+In your micro-benchmark code we recommend to only include 'perfs.h' which in turn
+includes any other framework headers.
+
+
+******************************
+* Distributed runs - Work in progress
+******************************
+
+Environment variables:
+- OCRRUN_OPT_TPL_NODEFILE: Optional, to specify a template node file that contains a number of hostnames.
+                           The run script extract the number of hostnames it needs for a particular run.
+

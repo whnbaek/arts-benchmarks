@@ -1,0 +1,86 @@
+#include "perfs.h"
+#include "ocr.h"
+
+// DESC: One worker creates all the events.
+// TIME: This is a template. Timing info is defined in the file including this one.
+//
+// VARIABLES:
+// - NB_INSTANCES
+// - NB_ITERS
+
+ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+    long accTimer = 0;
+    int it = 0;
+#if TIME_ALL
+    timestamp_t startAll;
+    get_time(&startAll);
+#endif
+    while (it < NB_ITERS) {
+        timestamp_t start;
+        timestamp_t stop;
+#if CLEAN_UP_ITERATION
+        ocrGuid_t evtGuids[NB_INSTANCES];
+#endif
+#if TIME_CREATION
+        get_time(&start);
+#endif
+        int i = 0;
+        while (i < NB_INSTANCES) {
+#if CLEAN_UP_ITERATION
+            ocrEventCreate(&evtGuids[i], EVENT_TYPE, false);
+#else
+            ocrGuid_t evtGuid;
+            ocrEventCreate(&evtGuid, EVENT_TYPE, false);
+#endif
+            i++;
+        }
+#if TIME_CREATION
+        get_time(&stop);
+#endif
+
+#if TIME_DESTRUCTION
+        get_time(&start);
+#endif
+#if CLEAN_UP_ITERATION
+#if REVERSE_CLEAN_UP_ITERATION
+        i = NB_INSTANCES-1;
+        while (i > -1) {
+            ocrEventDestroy(evtGuids[i]);
+            i--;
+        }
+#else
+        i = 0;
+        while (i < NB_INSTANCES) {
+            ocrEventDestroy(evtGuids[i]);
+            i++;
+        }
+#endif
+#endif
+#if TIME_DESTRUCTION
+        get_time(&stop);
+#endif
+        accTimer += elapsed_usec(&start, &stop);
+        it++;
+    }
+#if TIME_ALL
+    timestamp_t stopAll;
+    get_time(&stopAll);
+    accTimer += elapsed_usec(&startAll, &stopAll);
+#endif
+
+#if TIME_ALL
+    print_throughput("All", NB_ITERS * NB_INSTANCES, usec_to_sec(accTimer));
+#endif
+
+#if TIME_DESTRUCTION
+    print_throughput("Destruction", NB_ITERS * NB_INSTANCES, usec_to_sec(accTimer));
+#endif
+
+#if TIME_CREATION
+    print_throughput("Creation", NB_ITERS * NB_INSTANCES, usec_to_sec(accTimer));
+#endif
+
+    ocrShutdown();
+
+    return NULL_GUID;
+}
