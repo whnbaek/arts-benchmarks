@@ -1,0 +1,3 @@
+[submodule "external/arts"]
+	path = external/arts
+	url = git@github.com:whnbaek/ARTS.git
