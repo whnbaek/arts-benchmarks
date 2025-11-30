@@ -5,6 +5,9 @@
 
 #ifdef TG_ARCH
 #include "strings.h"
+#define ZERO_MEMORY(ptr, size) bzero((ptr), (size))
+#else
+#define ZERO_MEMORY(ptr, size) memset((ptr), 0, (size))
 #endif
 
 #include "hpgmg.h"
@@ -191,7 +194,7 @@ box_type* create_box(level_type* lPtr, int num_vecs, int box_dim, int num_ghosts
 #endif
   ocrDbCreate(&boxGuid, (void**)&boxPtr, totalMemSize, 0, currentAffinity, NO_ALLOC);
 
-  bzero(boxPtr, totalMemSize);
+  ZERO_MEMORY(boxPtr, totalMemSize);
 
   lPtr->jStride = jStride; lPtr->kStride = kStride, lPtr->volume = boxVolume;
 
@@ -214,7 +217,7 @@ box_type* create_box(level_type* lPtr, int num_vecs, int box_dim, int num_ghosts
     ocrDbCreate(&lPtr->constant_box_guid, (void**)&const_box, totalMemSize, 0, currentAffinity, NO_ALLOC);
     const_box->global_box_id = -1;
 
-    bzero((char*)boxPtr + lPtr->u, (lPtr->volume)*sizeof(double));
+    ZERO_MEMORY((char *)boxPtr + lPtr->u, (lPtr->volume) * sizeof(double));
 
 #if DEBUG
     PRINTF("constant_box_gui = %u\n", lPtr->constant_box_guid);
@@ -245,12 +248,12 @@ void initialize_problem(level_type* level, double a, double b) {
     beta_k =  (double*)(((char*)level->temp[box])+ level->beta_k);
     u_true = (double*)(((char*)level->temp[box])+ level->u_true);
     f = (double*)(((char*)level->temp[box])+ level->f);
-    bzero(alpha, (level->volume)*sizeof(double));
-    bzero(beta_i, (level->volume)*sizeof(double));
-    bzero(beta_j, (level->volume)*sizeof(double));
-    bzero(beta_k, (level->volume)*sizeof(double));
-    bzero(u_true, (level->volume)*sizeof(double));
-    bzero(f, (level->volume)*sizeof(double));
+    ZERO_MEMORY(alpha, (level->volume) * sizeof(double));
+    ZERO_MEMORY(beta_i, (level->volume) * sizeof(double));
+    ZERO_MEMORY(beta_j, (level->volume) * sizeof(double));
+    ZERO_MEMORY(beta_k, (level->volume) * sizeof(double));
+    ZERO_MEMORY(u_true, (level->volume) * sizeof(double));
+    ZERO_MEMORY(f, (level->volume) * sizeof(double));
 
     int i,j,k;
     int jStride = level->jStride;
@@ -671,7 +674,9 @@ void mg_build(mg_type* all_grids, level_type* fine_grid, double a, double b, int
       box_ghosts[level] = stencil_radius;
              doRestrict = 1;
     }
-    if(box_dim[level] < stencil_radius)doRestrict=0;
+    if (box_dim[level] < stencil_radius) {
+      doRestrict = 0;
+    }
     if(doRestrict)all_grids->num_levels++;
   }
   #endif

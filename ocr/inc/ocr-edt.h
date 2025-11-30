@@ -204,7 +204,7 @@ u8 ocrEventSatisfySlot(ocrGuid_t eventGuid, ocrGuid_t dataGuid, u32 slot);
 u8 ocrEdtTemplateCreate_internal(ocrGuid_t *guid, ocrEdt_t funcPtr,
                                  u32 paramc, u32 depc, char* funcName);
 
-
+#define OCR_ENABLE_EDT_NAMING
 #ifdef OCR_ENABLE_EDT_NAMING
 /**
  * @brief Creates an EDT template

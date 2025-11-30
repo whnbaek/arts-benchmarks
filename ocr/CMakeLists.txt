@@ -1,28 +1,11 @@
-cmake_minimum_required(VERSION 3.16)
+add_library(ocr SHARED)
+target_sources(ocr PRIVATE src/arts-ocr.c)
 
-set(ARTS_OCR_SOURCES
-    src/arts-ocr.c
-)
-
-add_library(ocr SHARED ${ARTS_OCR_SOURCES})
-
-set_target_properties(ocr PROPERTIES
-    OUTPUT_NAME ocr
-    POSITION_INDEPENDENT_CODE ON
-)
-
-find_package(Threads REQUIRED)
-
-# ARTS headers are provided by the arts_interface target
-if(TARGET arts_interface)
-    target_link_libraries(ocr
-        PRIVATE
-        arts_shared
-        Threads::Threads
-    )
-else()
-    message(FATAL_ERROR "ARTS targets are unavailable. Ensure external/ARTS is configured before building OCR.")
+if(NOT TARGET arts_shared)
+    message(FATAL_ERROR "ARTS targets are unavailable. Ensure external/arts is configured before building OCR.")
 endif()
+
+target_link_libraries(ocr PRIVATE arts_shared)
 
 target_include_directories(ocr
     PUBLIC
@@ -30,9 +13,7 @@ target_include_directories(ocr
     $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(ocr PRIVATE c_std_17)
-
-target_compile_definitions(ocr PRIVATE OCR_ENABLE_EDT_NAMING)
+add_library(OCR::ocr ALIAS ocr)
 
 install(TARGETS ocr
     EXPORT OcrTargets

@@ -7,6 +7,9 @@
 
 #ifdef TG_ARCH
 #include "strings.h"
+#define ZERO_MEMORY(ptr, size) bzero((ptr), (size))
+#else
+#define ZERO_MEMORY(ptr, size) memset((ptr), 0, (size))
 #endif
 
 
@@ -31,7 +34,7 @@ ocrGuid_t solve_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrDbCreate(&temp_guid, (void**)&temp, temp_size, 0,NULL_GUID,NO_ALLOC);
 
-  bzero(temp,temp_size);
+  ZERO_MEMORY(temp, temp_size);
 
   double *r0_id, *r_id, *p_id, *s_id, *Ap_id, *As_id,*vec_temp;
   r0_id = temp; r_id = temp + volume; p_id = temp + 2*volume; s_id = temp + 3*volume;

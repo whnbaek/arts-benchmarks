@@ -6,7 +6,8 @@
 # NOTES: The code expects Targets.txt and Parameters.txt to be
 # located in the working directory.
 
-INSTALL_DIR = /opt/share/xstack_app_input/sar/huge
+INSTALL_DIR_1 = ../../ocr/huge
+INSTALL_DIR_2 = ../../ocr/problem_size_scaling
 
 RM=rm -f
 CP=cp -f
@@ -26,13 +27,14 @@ clean:
 
 install:
 	$(CP)	Data.bin PlatformPosition.bin PulseTransmissionTime.bin \
-		Parameters.txt Targets.txt Radar.txt \
-		$(INSTALL_DIR)
+		$(INSTALL_DIR_1)
+	$(CP)	Data.bin PlatformPosition.bin PulseTransmissionTime.bin \
+		$(INSTALL_DIR_2)
 
 uninstall:
-	$(RM)	$(INSTALL_DIR)/Data.bin \
-		$(INSTALL_DIR)/PlatformPosition.bin \
-		$(INSTALL_DIR)/PulseTransmissionTime.bin \
-		$(INSTALL_DIR)/Parameters.txt \
-		$(INSTALL_DIR)/Targets.txt \
-		$(INSTALL_DIR)/Radar.txt
+	$(RM)	$(INSTALL_DIR_1)/Data.bin \
+		$(INSTALL_DIR_1)/PlatformPosition.bin \
+		$(INSTALL_DIR_1)/PulseTransmissionTime.bin \
+		$(INSTALL_DIR_2)/Data.bin \
+		$(INSTALL_DIR_2)/PlatformPosition.bin \
+		$(INSTALL_DIR_2)/PulseTransmissionTime.bin

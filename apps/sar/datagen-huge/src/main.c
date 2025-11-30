@@ -47,7 +47,106 @@
 
 #include "common.h"
 #include <assert.h>
+#include <stdbool.h>
 #include <stdlib.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define LOOP_RANGE_DEBUG 1
+
+#if LOOP_RANGE_DEBUG
+static void log_loop_range_internal(const char *label, long long start,
+                                    long long endExclusive, long long step) {
+  const long long span = endExclusive - start;
+  const char *status = "OK";
+  if (step == 0) {
+    status = "ZERO_STEP";
+  } else if ((step > 0 && span < 0) || (step < 0 && span > 0)) {
+    status = "NEGATIVE_RANGE";
+  }
+  fprintf(stderr,
+          "[LoopRange] %s: start=%lld endExclusive=%lld step=%lld span=%lld "
+          "status=%s\n",
+          label, start, endExclusive, step, span, status);
+}
+#define LOG_LOOP_RANGE(label, start, endExclusive, step)                       \
+  log_loop_range_internal((label), (long long)(start),                         \
+                          (long long)(endExclusive), (long long)(step))
+#else
+#define LOG_LOOP_RANGE(...)                                                    \
+  do {                                                                         \
+  } while (0)
+#endif
+
+#define LOOP_PROGRESS_DEBUG 1
+
+#if LOOP_PROGRESS_DEBUG
+static void log_loop_progress_internal(const char *label, long long current,
+                                       long long start, long long endExclusive,
+                                       long long step, long long interval) {
+  if (interval <= 0 || step == 0) {
+    return;
+  }
+
+  long long span = endExclusive - start;
+  long long spanAbs = llabs(span);
+  if (spanAbs == 0) {
+    return;
+  }
+
+  long long completed = current - start;
+  long long completedAbs = llabs(completed);
+  bool finalIter = (step > 0) ? (current + step >= endExclusive)
+                              : (current + step <= endExclusive);
+
+  if (completedAbs != 0 && !finalIter) {
+    if ((completedAbs % interval) != 0) {
+      return;
+    }
+  }
+
+  double percent = ((double)completedAbs / (double)spanAbs) * 100.0;
+  if (percent < 0.0)
+    percent = 0.0;
+  if (percent > 100.0)
+    percent = 100.0;
+
+  fprintf(stderr, "[LoopProgress] %s: index=%lld span=%lld progress=%.2f%%\n",
+          label, current, spanAbs, percent);
+}
+#define LOG_LOOP_PROGRESS(label, current, start, endExclusive, step, interval) \
+  log_loop_progress_internal((label), (long long)(current),                    \
+                             (long long)(start), (long long)(endExclusive),    \
+                             (long long)(step), (long long)(interval))
+#else
+#define LOG_LOOP_PROGRESS(...)                                                 \
+  do {                                                                         \
+  } while (0)
+#endif
+
+#ifdef USE_CUDA_ACCEL
+#include "cuda_accel.h"
+#endif
+
+static void accumulate_pulse_cpu(
+    int imageIndex, int is_rag, const Reflector *backgroundReflectors,
+    int numBackgroundReflectors, const Reflector *targetReflectors,
+    int numTargetReflectors, float px, float py, float pz, int Nx, float fc,
+    float r0, const float *freqVec, const int *Xt, fftwf_complex *Xr_buffer);
+
+static unsigned long long sar_rand_state = 0x330EULL;
+
+static void sar_srand48(long seed) {
+  sar_rand_state = (((unsigned long long)seed) << 16) + 0x330EULL;
+}
+
+static double sar_drand48(void) {
+  sar_rand_state =
+      (0x5DEECE66DULL * sar_rand_state + 0xBULL) & ((1ULL << 48) - 1);
+  return (double)sar_rand_state / (double)(1ULL << 48);
+}
 
 #define PULSE_GROUP_SIZE 128
 #define MASTER_RANK 0
@@ -131,16 +230,14 @@ int main(int argc, char *argv[])
     int i, k, l, m, n, g;       // Loop variables
     int Nx;                     // Number of range samples
     int numPulses;              // Number of pulses per image
-    int numGroups;              // Number of pulse groups (each group is up to PULSE_GROUP_SIZE)
-    double R;                    // Range from platform to target (m)
+    int numGroups;              // Number of pulse groups (each group is up to
+                                // PULSE_GROUP_SIZE)
     float R0;                   // Range of the zeroth range bin (m)
     float w;                    // Platform angular velocity (rad/s)
     float dr;                   // Down-Range resolution (m)
     float *Tp;                  // Pulse transmission timestamp
     float el;                   // Platform eleveation (m)
     float pri;                  // Pulse rate interval (s)
-    double t_d;                  // Round trip time delay (s)
-    double arg;                  // Argument in complex exponential term
     float h[Nh];                // FIR filter coefficients
     float Rswath;               // Range swath (m)
     float theta, phi;           // Azimuth angle, Polar angle
@@ -150,6 +247,9 @@ int main(int argc, char *argv[])
     int numBoundingBoxes;
     int numBackgroundReflectors;
     int numTargetReflectors;
+#ifdef USE_CUDA_ACCEL
+    int cudaReady = 0;
+#endif
 
 #ifdef USE_MPI
     int mpiRank, mpiNumProcs;
@@ -212,7 +312,7 @@ int main(int argc, char *argv[])
     numGroups = numPulses / PULSE_GROUP_SIZE;
     if (numPulses % PULSE_GROUP_SIZE != 0) { ++numGroups; }
 
-    srand48(0);
+    sar_srand48(0);
 
 #if 0
 numBackgroundReflectors=0;
@@ -318,6 +418,22 @@ printf("backgroundReflSpacing = %f\n",backgroundReflSpacing);
             Xt[n] = 0;
     }
 
+#ifdef USE_CUDA_ACCEL
+    if (sar_cuda_init(backgroundReflectors, numBackgroundReflectors,
+                      targetReflectors, numTargetReflectors, freqVec, Xt,
+                      Nx) != 0) {
+      fprintf(
+          stderr,
+          "CUDA initialization failed; continuing with CPU accumulation.\n");
+      cudaReady = 0;
+    } else {
+      cudaReady = 1;
+      if (mpiRank == MASTER_RANK) {
+        printf("CUDA reflector accumulation enabled.\n");
+      }
+    }
+#endif
+
     // Initialize delay buffers
     memset(Ux, 0, (Nh-1)*sizeof(float));
     memset(Uy, 0, (Nh-1)*sizeof(float));
@@ -358,125 +474,196 @@ printf("backgroundReflSpacing = %f\n",backgroundReflSpacing);
 #endif
     }
 #ifndef RAG_PARAM_ONLY
+    LOG_LOOP_RANGE("Image loop k", 0, numImages, 1);
+    const int imageProgressInterval = (numImages / 10) ? (numImages / 10) : 1;
     for(k=0; k<numImages; k++)
     {
-        if (mpiRank == MASTER_RANK) printf ("Image #%i\n", k);
-        // Generate uniform distribution over the interval [-0.5, 0.5]*rngBinDev*dr
-        gen_rand(&Ux[Nh-1], 0.5, -0.5, (float)rngBinDev*dr, numPulses);
-        gen_rand(&Uy[Nh-1], 0.5, -0.5, (float)rngBinDev*dr, numPulses);
-        gen_rand(&Uz[Nh-1], 0.5, -0.5, (float)rngBinDev*dr, numPulses);
+      LOG_LOOP_PROGRESS("Image loop k", k, 0, numImages, 1,
+                        imageProgressInterval);
+      if (mpiRank == MASTER_RANK)
+        printf("Image #%i\n", k);
+      // Generate uniform distribution over the interval [-0.5,
+      // 0.5]*rngBinDev*dr
+      gen_rand(&Ux[Nh - 1], 0.5, -0.5, (float)rngBinDev * dr, numPulses);
+      gen_rand(&Uy[Nh - 1], 0.5, -0.5, (float)rngBinDev * dr, numPulses);
+      gen_rand(&Uz[Nh - 1], 0.5, -0.5, (float)rngBinDev * dr, numPulses);
 
-        // Filter distributions
-        fir_filter(Ux, h, Ux_filt, Nh, numPulses);
-        fir_filter(Uy, h, Uy_filt, Nh, numPulses);
-        fir_filter(Uz, h, Uz_filt, Nh, numPulses);
+      // Filter distributions
+      fir_filter(Ux, h, Ux_filt, Nh, numPulses);
+      fir_filter(Uy, h, Uy_filt, Nh, numPulses);
+      fir_filter(Uz, h, Uz_filt, Nh, numPulses);
 
-        // Shift delay buffer samples from bottom to top
-        memcpy(Ux, &Ux[numPulses], (Nh-1)*sizeof(float));
-        memcpy(Uy, &Uy[numPulses], (Nh-1)*sizeof(float));
-        memcpy(Uz, &Uz[numPulses], (Nh-1)*sizeof(float));
+      // Shift delay buffer samples from bottom to top
+      memcpy(Ux, &Ux[numPulses], (Nh - 1) * sizeof(float));
+      memcpy(Uy, &Uy[numPulses], (Nh - 1) * sizeof(float));
+      memcpy(Uz, &Uz[numPulses], (Nh - 1) * sizeof(float));
 
-        for (g = mpiRank; g < numGroups; g += mpiNumProcs)
-        {
-            i = g * PULSE_GROUP_SIZE;
-            if (mpiRank == MASTER_RANK)
-            {
-                printf("%d of %d (%d%%)\r", k*numPulses+i, numImages*numPulses, 100*(k*numPulses+i)/(numImages*numPulses));
-                fflush(stdout);
-            }
+      LOG_LOOP_RANGE("Group loop g", mpiRank, numGroups, mpiNumProcs);
+      long long groupProgressUnits = (numGroups / 10) ? (numGroups / 10) : 1;
+      if (groupProgressUnits <= 0) {
+        groupProgressUnits = 1;
+      }
+      groupProgressUnits *= (mpiNumProcs > 0) ? mpiNumProcs : 1;
+      for (g = mpiRank; g < numGroups; g += mpiNumProcs) {
+        LOG_LOOP_PROGRESS("Group loop g", g, mpiRank, numGroups, mpiNumProcs,
+                          groupProgressUnits);
+        i = g * PULSE_GROUP_SIZE;
+        int pulsesRemaining = numPulses - i;
+        if (pulsesRemaining <= 0) {
+          break;
+        }
+        int pulsesInGroup = (pulsesRemaining < PULSE_GROUP_SIZE)
+                                ? pulsesRemaining
+                                : PULSE_GROUP_SIZE;
+        if (mpiRank == MASTER_RANK) {
+          printf("%d of %d (%d%%)\r", k * numPulses + i, numImages * numPulses,
+                 100 * (k * numPulses + i) / (numImages * numPulses));
+          fflush(stdout);
+        }
 
-            #pragma omp parallel for private(theta,m,n,R,t_d,arg)
-            for(l=i; l<i+PULSE_GROUP_SIZE; l++)
-            {
-                if (l>=numPulses)
-                {
-                    continue;
+#ifdef USE_CUDA_ACCEL
+            if (cudaReady) {
+              LOG_LOOP_RANGE("Pulse loop l (CUDA)", i, i + pulsesInGroup, 1);
+              int pulseProgressInterval =
+                  (pulsesInGroup / 8) ? (pulsesInGroup / 8) : 1;
+              if (pulseProgressInterval <= 0) {
+                pulseProgressInterval = 1;
+              }
+              for (l = i; l < i + pulsesInGroup; l++) {
+                LOG_LOOP_PROGRESS("Pulse loop l (CUDA)", l, i,
+                                  i + pulsesInGroup, 1, pulseProgressInterval);
+                if (l >= numPulses) {
+                  continue;
                 }
 
-                theta = w*pri*l;    // Calculate azimuth angle
-                Tp[l-i] = pri*l;        // Pulse transmission timestamp
-                px[l-i] = r0*cos(theta)*sin(phi); // Platform location, x
-                py[l-i] = r0*sin(theta)*sin(phi); // Platform location, y
-                pz[l-i] = r0*cos(phi);             // Platform location, z
+                theta = w * pri * l; // Calculate azimuth angle
+                Tp[l - i] = pri * l; // Pulse transmission timestamp
+                px[l - i] = r0 * cos(theta) * sin(phi); // Platform location, x
+                py[l - i] = r0 * sin(theta) * sin(phi); // Platform location, y
+                pz[l - i] = r0 * cos(phi);              // Platform location, z
 
                 // Induce perturbation in flight trajectory
-                px[l-i] += Ux_filt[l];
-                py[l-i] += Uy_filt[l];
-                pz[l-i] += Uz_filt[l];
+                px[l - i] += Ux_filt[l];
+                py[l - i] += Uy_filt[l];
+                pz[l - i] += Uz_filt[l];
 
-                // Initialize received spectrum, Xr
-                memset(Xr[l-i], 0, Nx*sizeof(fftwf_complex));
-
-                for(m=0; m<numBackgroundReflectors+numTargetReflectors; m++)
-                {
-                    Reflector refl = (m < numBackgroundReflectors) ?
-                        backgroundReflectors[m] : targetReflectors[m-numBackgroundReflectors];
-                    int is_target_reflector = (m >= numBackgroundReflectors) ? 1 : 0;
-                    int is_valid_image = ((k >= (refl.first_image-1)) && (k <= (refl.last_image-1))) ?
-                        1 : 0;
-                    // We always add target reflectors, but the phase differs depending on whether
-                    // the target is currently "valid" or active
-#if 0
-                    int is_valid_reflector = is_target_reflector || is_valid_image;
-                    double phase_offset = (is_target_reflector && is_valid_image) ?
-                        refl.phase_offset : 0.0;
-                    if(is_valid_reflector) {
-#else
-		    int is_rag = (k!=0) ? 1 : 0;
-                    double phase_offset = (is_target_reflector && is_valid_image && is_rag) ?
-                        refl.phase_offset : 0.0;
-                    if(is_valid_image) {
+                int useGpu = cudaReady;
+                const int is_rag_flag = (k != 0) ? 1 : 0;
+                if (useGpu) {
+                  if (sar_cuda_accumulate_pulse(k, is_rag_flag, px[l - i],
+                                                py[l - i], pz[l - i], r0, fc,
+                                                Xr[l - i]) != 0) {
+                    fprintf(stderr, "CUDA accumulation failed, falling back to "
+                                    "CPU path.\n");
+#ifdef USE_CUDA_ACCEL
+                    sar_cuda_shutdown();
 #endif
-                        // Calculate range from platform to target m
-                        R = sqrt( ((double)px[l-i]-refl.x)*((double)px[l-i]-refl.x) +
-                            ((double)py[l-i]-refl.y)*((double)py[l-i]-refl.y) +
-                            ((double)pz[l-i]-refl.z)*((double)pz[l-i]-refl.z) );
+                    cudaReady = 0;
+                    useGpu = 0;
+                  }
+                }
 
-                        // Calculate time delay relative to scene center
-                        t_d = 2*(R-r0)/c;
-
-                        // Accumulate received signal
-                        for(n=0; n<Nx; n++)
-                        {
-                            arg = -2*M_PI*t_d*(fc+freqVec[n]);
-                            Xr[l-i][n][0] += (float)Xt[n] * refl.refl * cos(arg+phase_offset);
-                            Xr[l-i][n][1] += (float)Xt[n] * refl.refl * sin(arg+phase_offset);
-                        }
-                    }
+                if (!useGpu) {
+                  accumulate_pulse_cpu(k, is_rag_flag, backgroundReflectors,
+                                       numBackgroundReflectors,
+                                       targetReflectors, numTargetReflectors,
+                                       px[l - i], py[l - i], pz[l - i], Nx, fc,
+                                       r0, freqVec, Xt, Xr[l - i]);
                 }
 
                 // Perform IFFT
-                fftwf_execute(plan_backward[l-i]);
+                fftwf_execute(plan_backward[l - i]);
 
                 // Normalize IFFT output and swap first and second halves
-                for(m=(int)ceilf(Nx/2), n=0; m<Nx; m++, n++) {
-                    y2[2*((l-i)*Nx+n)+0] = y[l-i][m][0]/Nx;
-                    y2[2*((l-i)*Nx+n)+1] = y[l-i][m][1]/Nx;
+                LOG_LOOP_RANGE("IFFT swap first half (CUDA)",
+                               (int)ceilf(Nx / 2), Nx, 1);
+                for (m = (int)ceilf(Nx / 2), n = 0; m < Nx; m++, n++) {
+                  y2[2 * ((l - i) * Nx + n) + 0] = y[l - i][m][0] / Nx;
+                  y2[2 * ((l - i) * Nx + n) + 1] = y[l - i][m][1] / Nx;
                 }
-                for(m=0; m<(int)ceilf(Nx/2); m++, n++) {
-                    y2[2*((l-i)*Nx+n)+0] = y[l-i][m][0]/Nx;
-                    y2[2*((l-i)*Nx+n)+1] = y[l-i][m][1]/Nx;
+                LOG_LOOP_RANGE("IFFT swap second half (CUDA)", 0,
+                               (int)ceilf(Nx / 2), 1);
+                for (m = 0; m < (int)ceilf(Nx / 2); m++, n++) {
+                  y2[2 * ((l - i) * Nx + n) + 0] = y[l - i][m][0] / Nx;
+                  y2[2 * ((l - i) * Nx + n) + 1] = y[l - i][m][1] / Nx;
                 }
 
                 // Induce affine misregistration in second image
-                if(k == 1) {
-                    px[l-i] += 8.4 * dr;
-                    py[l-i] += 8.4 * dr;
+                if (k == 1) {
+                  px[l - i] += 8.4 * dr;
+                  py[l - i] += 8.4 * dr;
+                }
+              }
+            } else
+#endif
+            {
+              LOG_LOOP_RANGE("Pulse loop l (CPU)", i, i + pulsesInGroup, 1);
+              int pulseProgressIntervalCpu =
+                  (pulsesInGroup / 8) ? (pulsesInGroup / 8) : 1;
+              if (pulseProgressIntervalCpu <= 0) {
+                pulseProgressIntervalCpu = 1;
+              }
+#pragma omp parallel for private(theta)
+              for (l = i; l < i + pulsesInGroup; l++) {
+                LOG_LOOP_PROGRESS("Pulse loop l (CPU)", l, i, i + pulsesInGroup,
+                                  1, pulseProgressIntervalCpu);
+                if (l >= numPulses) {
+                  continue;
                 }
 
-            } // for l
+                theta = w * pri * l; // Calculate azimuth angle
+                Tp[l - i] = pri * l; // Pulse transmission timestamp
+                px[l - i] = r0 * cos(theta) * sin(phi); // Platform location, x
+                py[l - i] = r0 * sin(theta) * sin(phi); // Platform location, y
+                pz[l - i] = r0 * cos(phi);              // Platform location, z
+
+                // Induce perturbation in flight trajectory
+                px[l - i] += Ux_filt[l];
+                py[l - i] += Uy_filt[l];
+                pz[l - i] += Uz_filt[l];
+
+                const int is_rag_flag = (k != 0) ? 1 : 0;
+                accumulate_pulse_cpu(k, is_rag_flag, backgroundReflectors,
+                                     numBackgroundReflectors, targetReflectors,
+                                     numTargetReflectors, px[l - i], py[l - i],
+                                     pz[l - i], Nx, fc, r0, freqVec, Xt,
+                                     Xr[l - i]);
+
+                // Perform IFFT
+                fftwf_execute(plan_backward[l - i]);
+
+                // Normalize IFFT output and swap first and second halves
+                LOG_LOOP_RANGE("IFFT swap first half (CPU)", (int)ceilf(Nx / 2),
+                               Nx, 1);
+                for (m = (int)ceilf(Nx / 2), n = 0; m < Nx; m++, n++) {
+                  y2[2 * ((l - i) * Nx + n) + 0] = y[l - i][m][0] / Nx;
+                  y2[2 * ((l - i) * Nx + n) + 1] = y[l - i][m][1] / Nx;
+                }
+                LOG_LOOP_RANGE("IFFT swap second half (CPU)", 0,
+                               (int)ceilf(Nx / 2), 1);
+                for (m = 0; m < (int)ceilf(Nx / 2); m++, n++) {
+                  y2[2 * ((l - i) * Nx + n) + 0] = y[l - i][m][0] / Nx;
+                  y2[2 * ((l - i) * Nx + n) + 1] = y[l - i][m][1] / Nx;
+                }
+
+                // Induce affine misregistration in second image
+                if (k == 1) {
+                  px[l - i] += 8.4 * dr;
+                  py[l - i] += 8.4 * dr;
+                }
+              }
+            }
 
             // Write the results to file for the master rank
             if (mpiRank == MASTER_RANK)
             {
-                int nelem = (numPulses - i < PULSE_GROUP_SIZE) ? numPulses - i : PULSE_GROUP_SIZE;
-                int p;
-                fwrite(y2, sizeof(float), nelem * Nx * 2, pFile1);
-                for (p = 0; p < nelem; ++p)
-                {
-                    fwrite(px+p, sizeof(float), 1, pFile2);
-                    fwrite(py+p, sizeof(float), 1, pFile2);
-                    fwrite(pz+p, sizeof(float), 1, pFile2);
+              int nelem = pulsesInGroup;
+              int p;
+              fwrite(y2, sizeof(float), nelem * Nx * 2, pFile1);
+              for (p = 0; p < nelem; ++p) {
+                fwrite(px + p, sizeof(float), 1, pFile2);
+                fwrite(py + p, sizeof(float), 1, pFile2);
+                fwrite(pz + p, sizeof(float), 1, pFile2);
                 }
                 fwrite(Tp, sizeof(float), nelem, pFile3);
             }
@@ -516,23 +703,23 @@ printf("backgroundReflSpacing = %f\n",backgroundReflSpacing);
             }
             else // worker node
             {
-                int nelem = (numPulses - i < PULSE_GROUP_SIZE) ? numPulses - i : PULSE_GROUP_SIZE;
-                MPI_ERROR_CHECK(MPI_Send(&nelem, 1, MPI_INT, MASTER_RANK,
-                    MPI_TAG, MPI_COMM_WORLD));
-                MPI_ERROR_CHECK(MPI_Send(y2, nelem*Nx*2, MPI_FLOAT, MASTER_RANK,
-                    MPI_TAG, MPI_COMM_WORLD));
-                MPI_ERROR_CHECK(MPI_Send(px, nelem, MPI_FLOAT, MASTER_RANK,
-                    MPI_TAG, MPI_COMM_WORLD));
-                MPI_ERROR_CHECK(MPI_Send(py, nelem, MPI_FLOAT, MASTER_RANK,
-                    MPI_TAG, MPI_COMM_WORLD));
-                MPI_ERROR_CHECK(MPI_Send(pz, nelem, MPI_FLOAT, MASTER_RANK,
-                    MPI_TAG, MPI_COMM_WORLD));
-                MPI_ERROR_CHECK(MPI_Send(Tp, nelem, MPI_FLOAT, MASTER_RANK,
-                    MPI_TAG, MPI_COMM_WORLD));
+              int nelem = pulsesInGroup;
+              MPI_ERROR_CHECK(MPI_Send(&nelem, 1, MPI_INT, MASTER_RANK, MPI_TAG,
+                                       MPI_COMM_WORLD));
+              MPI_ERROR_CHECK(MPI_Send(y2, nelem * Nx * 2, MPI_FLOAT,
+                                       MASTER_RANK, MPI_TAG, MPI_COMM_WORLD));
+              MPI_ERROR_CHECK(MPI_Send(px, nelem, MPI_FLOAT, MASTER_RANK,
+                                       MPI_TAG, MPI_COMM_WORLD));
+              MPI_ERROR_CHECK(MPI_Send(py, nelem, MPI_FLOAT, MASTER_RANK,
+                                       MPI_TAG, MPI_COMM_WORLD));
+              MPI_ERROR_CHECK(MPI_Send(pz, nelem, MPI_FLOAT, MASTER_RANK,
+                                       MPI_TAG, MPI_COMM_WORLD));
+              MPI_ERROR_CHECK(MPI_Send(Tp, nelem, MPI_FLOAT, MASTER_RANK,
+                                       MPI_TAG, MPI_COMM_WORLD));
             }
 #endif // USE_MPI
 
-        } // for i
+      } // for i
     } // for k
 #endif
     // Close files
@@ -578,11 +765,68 @@ printf("backgroundReflSpacing = %f\n",backgroundReflSpacing);
 
 void CleanupAndExit(int exitCode)
 {
+#ifdef USE_CUDA_ACCEL
+  sar_cuda_shutdown();
+#endif
 #ifdef USE_MPI
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Finalize();
 #endif // USE_MPI
     exit(exitCode);
+}
+
+static void accumulate_pulse_cpu(
+    int imageIndex, int is_rag, const Reflector *backgroundReflectors,
+    int numBackgroundReflectors, const Reflector *targetReflectors,
+    int numTargetReflectors, float px, float py, float pz, int Nx, float fc,
+    float r0, const float *freqVec, const int *Xt, fftwf_complex *Xr_buffer) {
+  const int totalReflectors = numBackgroundReflectors + numTargetReflectors;
+  memset(Xr_buffer, 0, Nx * sizeof(fftwf_complex));
+
+  LOG_LOOP_RANGE("Reflector loop (CPU accumulation)", 0, totalReflectors, 1);
+  int reflectorProgressInterval =
+      (totalReflectors / 10) ? (totalReflectors / 10) : 1;
+  if (reflectorProgressInterval <= 0) {
+    reflectorProgressInterval = 1;
+  }
+  for (int m = 0; m < totalReflectors; ++m) {
+    LOG_LOOP_PROGRESS("Reflector loop (CPU accumulation)", m, 0,
+                      totalReflectors, 1, reflectorProgressInterval);
+    const Reflector *refl =
+        (m < numBackgroundReflectors)
+            ? &backgroundReflectors[m]
+            : &targetReflectors[m - numBackgroundReflectors];
+    const int is_target_reflector = (m >= numBackgroundReflectors) ? 1 : 0;
+    const int is_valid_image = ((imageIndex >= (refl->first_image - 1)) &&
+                                (imageIndex <= (refl->last_image - 1)))
+                                   ? 1
+                                   : 0;
+
+#if 0
+        const int is_valid_reflector = is_target_reflector || is_valid_image;
+        const double phase_offset = (is_target_reflector && is_valid_image) ?
+            refl->phase_offset : 0.0;
+        if (is_valid_reflector)
+        {
+#else
+    const double phase_offset =
+        (is_target_reflector && is_valid_image && is_rag) ? refl->phase_offset
+                                                          : 0.0;
+    if (is_valid_image) {
+#endif
+      const double dx = (double)px - refl->x;
+      const double dy = (double)py - refl->y;
+      const double dz = (double)pz - refl->z;
+      const double R = sqrt(dx * dx + dy * dy + dz * dz);
+      const double t_d = 2.0 * (R - r0) / c;
+
+      for (int n = 0; n < Nx; ++n) {
+        const double arg = -2.0 * M_PI * t_d * (fc + freqVec[n]);
+        Xr_buffer[n][0] += (float)Xt[n] * refl->refl * cos(arg + phase_offset);
+        Xr_buffer[n][1] += (float)Xt[n] * refl->refl * sin(arg + phase_offset);
+      }
+    }
+  }
 }
 
 int GetNumLinearBackgroundReflectorsBySpacing(
@@ -634,21 +878,34 @@ void AddTargetReflectors(
         Reflector *refl = *reflectors;
         const double spacing = bboxes[i].spacing;
         GetNumReflectorsByBoundingBox(&width, &height, bboxes[i]);
+        LOG_LOOP_RANGE("Target reflector rows", 0, width, 1);
+        LOG_LOOP_RANGE("Target reflector cols", 0, height, 1);
+        int targetRowProgressInterval = (width / 4) ? (width / 4) : 1;
+        int targetColProgressInterval = (height / 4) ? (height / 4) : 1;
+        if (targetRowProgressInterval <= 0) {
+          targetRowProgressInterval = 1;
+        }
+        if (targetColProgressInterval <= 0) {
+          targetColProgressInterval = 1;
+        }
         for (w = 0; w < width; ++w)
         {
-            for (h = 0; h < height; ++h)
-            {
-                refl[n].x = bboxes[i].tlhc_x + w * spacing +
-                    drand48() * spacing - spacing/2.0;
-                refl[n].y = bboxes[i].tlhc_y - h * spacing +
-                    drand48() * spacing - spacing/2.0;
-                refl[n].z = 0.0;
-                refl[n].refl = bboxes[i].reflectivity;
-                refl[n].phase_offset = drand48() * 2.0 * M_PI;
-                refl[n].first_image = bboxes[i].firstImage;
-                refl[n].last_image = bboxes[i].lastImage;
-                ++n;
-            }
+          LOG_LOOP_PROGRESS("Target reflector row loop", w, 0, width, 1,
+                            targetRowProgressInterval);
+          for (h = 0; h < height; ++h) {
+            LOG_LOOP_PROGRESS("Target reflector col loop", h, 0, height, 1,
+                              targetColProgressInterval);
+            refl[n].x = bboxes[i].tlhc_x + w * spacing +
+                        sar_drand48() * spacing - spacing / 2.0;
+            refl[n].y = bboxes[i].tlhc_y - h * spacing +
+                        sar_drand48() * spacing - spacing / 2.0;
+            refl[n].z = 0.0;
+            refl[n].refl = bboxes[i].reflectivity;
+            refl[n].phase_offset = sar_drand48() * 2.0 * M_PI;
+            refl[n].first_image = bboxes[i].firstImage;
+            refl[n].last_image = bboxes[i].lastImage;
+            ++n;
+          }
         }
     }
 }
@@ -678,23 +935,35 @@ void AddBackgroundReflectors(
     *numBackgroundReflectors = numLinearRefl * numLinearRefl;
     memset(*reflectors, 0, sizeof(Reflector) * numLinearRefl * numLinearRefl);
 
+    LOG_LOOP_RANGE("Background reflector rows", 0, numLinearRefl, 1);
+    LOG_LOOP_RANGE("Background reflector cols", 0, numLinearRefl, 1);
+    int backRowProgressInterval =
+        (numLinearRefl / 10) ? (numLinearRefl / 10) : 1;
+    if (backRowProgressInterval <= 0) {
+      backRowProgressInterval = 1;
+    }
+    int backColProgressInterval = backRowProgressInterval;
     for (i = 0; i < numLinearRefl; ++i)
     {
         Reflector *refl = *reflectors;
-        const float y = -edgeSize/2.0 + i * spacing;;
+        const float y = -edgeSize / 2.0 + i * spacing;
+        LOG_LOOP_PROGRESS("Background reflector row loop", i, 0, numLinearRefl,
+                          1, backRowProgressInterval);
         for (j = 0; j < numLinearRefl; ++j)
         {
-            const float x = -edgeSize/2.0 + j * spacing;
-            const float x_off = spacing * (drand48() - 0.5);
-            const float y_off = spacing * (drand48() - 0.5);
+          LOG_LOOP_PROGRESS("Background reflector col loop", j, 0,
+                            numLinearRefl, 1, backColProgressInterval);
+          const float x = -edgeSize / 2.0 + j * spacing;
+          const float x_off = spacing * (sar_drand48() - 0.5);
+          const float y_off = spacing * (sar_drand48() - 0.5);
 
-            refl[i*numLinearRefl+j].x = x + x_off;
-            refl[i*numLinearRefl+j].y = y + y_off;
-            refl[i*numLinearRefl+j].z = 0.0;
-            refl[i*numLinearRefl+j].refl = 1.0;
-            refl[i*numLinearRefl+j].phase_offset = 0.0;
-            refl[i*numLinearRefl+j].first_image = 1;
-            refl[i*numLinearRefl+j].last_image = numImages;
+          refl[i * numLinearRefl + j].x = x + x_off;
+          refl[i * numLinearRefl + j].y = y + y_off;
+          refl[i * numLinearRefl + j].z = 0.0;
+          refl[i * numLinearRefl + j].refl = 1.0;
+          refl[i * numLinearRefl + j].phase_offset = 0.0;
+          refl[i * numLinearRefl + j].first_image = 1;
+          refl[i * numLinearRefl + j].last_image = numImages;
         }
     }
 }

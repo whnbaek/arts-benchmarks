@@ -7,6 +7,9 @@
 
 #ifdef TG_ARCH
 #include "strings.h"
+#define ZERO_MEMORY(ptr, size) bzero((ptr), (size))
+#else
+#define ZERO_MEMORY(ptr, size) memset((ptr), 0, (size))
 #endif
 
 
@@ -111,7 +114,7 @@ ocrGuid_t init_ur_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   double *f = f_g + NUM_GHOSTS * (1 + l->jStride + l->kStride);
 
   // initialize u to 0, including ghost zones
-  bzero(u, (l->volume)*sizeof(double));
+  ZERO_MEMORY(u, (l->volume) * sizeof(double));
 
   // only if coarsest grid. This is similar to initializing u zero in Sam's code
   if (l->level == (paramv[3]-1))
@@ -466,7 +469,7 @@ ocrGuid_t zero_vector_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   box_type *b = (box_type*)depv[1].ptr;
   if( paramv[0] == 0) {
     double *x = (double*)((char*)b+ l->u);
-    bzero(x,l->volume*sizeof(double));
+    ZERO_MEMORY(x, l->volume * sizeof(double));
   }
   return NULL_GUID;
 }
