@@ -14,7 +14,7 @@ if [[ "$PWD" != "$repo_root" ]]; then
 	exit 1
 fi
 
-bin_dir="${repo_root}/.install/bin/apps"
+bin_dir="${repo_root}/.install/bin/ocr-apps"
 lib_dir="${repo_root}/.install/lib"
 log_dir="${repo_root}/logs/apps"
 

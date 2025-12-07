@@ -21,4 +21,4 @@ endif()
 
 add_subdirectory(external)
 add_subdirectory(ocr)
-add_subdirectory(apps)
+add_subdirectory(ocr-apps)
