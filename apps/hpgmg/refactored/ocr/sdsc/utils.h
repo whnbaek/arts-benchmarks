@@ -33,9 +33,8 @@ void add_vectors(level_type * level, double *id_c, double scale_a, double *id_a,
 void print_vectors_sum(level_type *level, box_type *box);
 
 #ifdef TG_ARCH
-void ABORT(int a);
 float tanh_approx(float val);
 #endif
-
+void ABORT(int a);
 
 #endif

@@ -2,3 +2,7 @@ build/
 .install/
 .cache/
 .vscode/
+core.*
+*.out
+*.txt
+.artsPrintLock

@@ -68,8 +68,6 @@ void ocrShutdown();
  */
 void ocrAbort(u8 errorCode);
 
-#define ABORT(errorCode) ocrAbort(errorCode)
-
 /**
  * @brief Retrieves the traditional 'argc' value in mainEdt.
  *

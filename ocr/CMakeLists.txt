@@ -1,11 +1,12 @@
 add_library(ocr SHARED)
 target_sources(ocr PRIVATE src/arts-ocr.c)
+target_compile_definitions(ocr PRIVATE ENABLE_EXTENSION_LABELING)
 
 if(NOT TARGET arts_shared)
     message(FATAL_ERROR "ARTS targets are unavailable. Ensure external/arts is configured before building OCR.")
 endif()
 
-target_link_libraries(ocr PRIVATE arts_shared)
+target_link_libraries(ocr PUBLIC arts_shared)
 
 target_include_directories(ocr
     PUBLIC

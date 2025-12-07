@@ -127,6 +127,8 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     s32 tile_height = (s32) dbparamv[1];
     s32 n_tiles_height = (s32) dbparamv[2];
     s32 n_tiles_width = (s32) dbparamv[3];
+    s32 orig_len_1 = (s32)dbparamv[6]; /* Original string 1 length */
+    s32 orig_len_2 = (s32)dbparamv[7]; /* Original string 2 length */
     s8* string_1 = (s8* ) &dbparamv[dbparamv[4]];
     s8* string_2 = (s8* ) &dbparamv[dbparamv[5]];
 
@@ -213,18 +215,25 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     ocrDbRelease(db_guid_i_j_brow);
     ocrEventSatisfy((ocrGuid_t) paramv[4], db_guid_i_j_brow);
 
+    /* If this is the last tile (bottom right most tile), finish */
+    if (i == n_tiles_height && j == n_tiles_width) {
+      s32 pos_in_tile_i = ((orig_len_2 - 1) % tile_height) + 1;
+      s32 pos_in_tile_j = ((orig_len_1 - 1) % tile_width) + 1;
+      s32 final_score = curr_tile[pos_in_tile_i][pos_in_tile_j];
+      PRINTF("score: %d\n", final_score);
+      VERIFY(final_score == paramv[5], "Expected score: %d\n", (s32)paramv[5]);
+      if (final_score == paramv[5]) {
+        ocrShutdown();
+      } else {
+        ocrAbort(1);
+      }
+    }
     ocrDbDestroy(db_curr_tile);
     ocrDbDestroy(db_curr_tile_tmp);
     /* We can also free all the input DBs we get */
     ocrDbDestroy(depv[0].guid);
     ocrDbDestroy(depv[1].guid);
     ocrDbDestroy(depv[2].guid);
-    /* If this is the last tile (bottom right most tile), finish */
-    if ( i == n_tiles_height && j == n_tiles_width ) {
-        PRINTF("score: %d\n", curr_bottom_row[tile_width-1]);
-        VERIFY(curr_bottom_row[tile_width-1] == paramv[5], "Expected score: %d\n", (s32)paramv[5]);
-        ocrShutdown();
-    }
     return NULL_GUID;
 }
 
@@ -289,17 +298,21 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
     }
 }
 
-static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_tiles_height, s32* p_n_tiles_width, s32* p_tile_width, s32* p_tile_height, s8** p_string_1, s8** p_string_2, u32 *check_score) {
-    u64 argc = getArgc(marshalled);
+static u32 __attribute__((noinline))
+ioHandling(void *marshalled, s32 *p_n_tiles_height, s32 *p_n_tiles_width,
+           s32 *p_tile_width, s32 *p_tile_height, s8 **p_string_1,
+           s8 **p_string_2, u32 *check_score, u32 *p_orig_len_1,
+           u32 *p_orig_len_2) {
+  u64 argc = getArgc(marshalled);
 
-    if(argc < 6) {
+  if (argc < 6) {
 #ifdef TG_ARCH
         PRINTF("Usage: %s tileWidth tileHeight string1Length string2Length scoreLength\n", getArgv(marshalled, 0)/*argv[0]*/);
 #else
         PRINTF("Usage: %s tileWidth tileHeight fileName1 fileName2 scoreFile\n", getArgv(marshalled, 0)/*argv[0]*/);
 #endif
         return 1;
-    }
+  }
 
     u32 n_char_in_file_1 = 0;
     u32 n_char_in_file_2 = 0;
@@ -338,10 +351,55 @@ static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_ti
     PRINTF("Tile width is %d\n", *p_tile_width);
     PRINTF("Tile height is %d\n", *p_tile_height);
 
-    *p_n_tiles_width = n_char_in_file_1 / *p_tile_width;
-    *p_n_tiles_height = n_char_in_file_2 / *p_tile_height;
+    /* Calculate number of tiles, rounding up to handle non-divisible lengths */
+    *p_n_tiles_width = (n_char_in_file_1 + *p_tile_width - 1) / *p_tile_width;
+    *p_n_tiles_height =
+        (n_char_in_file_2 + *p_tile_height - 1) / *p_tile_height;
+
+    /* Calculate padded lengths */
+    u32 padded_len_1 = (*p_n_tiles_width) * (*p_tile_width);
+    u32 padded_len_2 = (*p_n_tiles_height) * (*p_tile_height);
+
+    /* If padding is needed, create new padded buffers */
+    if (padded_len_1 > n_char_in_file_1) {
+      ocrGuid_t padded_db;
+      s8 *padded_string_1;
+      ocrDbCreate(&padded_db, (void **)&padded_string_1,
+                  sizeof(s8) * padded_len_1, DB_PROP_NONE, NULL_GUID, NO_ALLOC);
+      /* Copy original data */
+      for (u32 k = 0; k < n_char_in_file_1; ++k) {
+        padded_string_1[k] = (*p_string_1)[k];
+      }
+      /* Pad with GAP characters (which score GAP_PENALTY against anything) */
+      for (u32 k = n_char_in_file_1; k < padded_len_1; ++k) {
+        padded_string_1[k] = GAP;
+      }
+      *p_string_1 = padded_string_1;
+      PRINTF("Padded string 1 from %d to %d\n", n_char_in_file_1, padded_len_1);
+    }
+
+    if (padded_len_2 > n_char_in_file_2) {
+      ocrGuid_t padded_db;
+      s8 *padded_string_2;
+      ocrDbCreate(&padded_db, (void **)&padded_string_2,
+                  sizeof(s8) * padded_len_2, DB_PROP_NONE, NULL_GUID, NO_ALLOC);
+      /* Copy original data */
+      for (u32 k = 0; k < n_char_in_file_2; ++k) {
+        padded_string_2[k] = (*p_string_2)[k];
+      }
+      /* Pad with GAP characters */
+      for (u32 k = n_char_in_file_2; k < padded_len_2; ++k) {
+        padded_string_2[k] = GAP;
+      }
+      *p_string_2 = padded_string_2;
+      PRINTF("Padded string 2 from %d to %d\n", n_char_in_file_2, padded_len_2);
+    }
 
     PRINTF("Imported %d x %d tiles.\n", *p_n_tiles_width, *p_n_tiles_height);
+
+    /* Return original string lengths for correct score position calculation */
+    *p_orig_len_1 = n_char_in_file_1;
+    *p_orig_len_2 = n_char_in_file_2;
 
     PRINTF("Allocating tile matrix\n");
     return 0;
@@ -358,11 +416,13 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     s8* string_1;
     s8* string_2;
     u32 check_score;
+    u32 orig_len_1, orig_len_2;
 
-    if(ioHandling(depv[0].ptr, &n_tiles_height, &n_tiles_width, &tile_width, &tile_height, &string_1, &string_2, &check_score))
-    {
-        ocrShutdown();
-        return NULL_GUID;
+    if (ioHandling(depv[0].ptr, &n_tiles_height, &n_tiles_width, &tile_width,
+                   &tile_height, &string_1, &string_2, &check_score,
+                   &orig_len_1, &orig_len_2)) {
+      ocrShutdown();
+      return NULL_GUID;
     }
 
     s32 i, j;
@@ -396,7 +456,7 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     string1Size = ((string1Size%(sizeof(u64))) ? (string1Size/sizeof(u64))+1 : (string1Size/sizeof(u64)));
     u64 string2Size = sizeof(s8) * string2Length;
     string2Size = ((string2Size%(sizeof(u64))) ? (string2Size/sizeof(u64))+1 : (string2Size/sizeof(u64)));
-    u64 dbHeaderSize = 6;
+    u64 dbHeaderSize = 8; /* Increased to include orig_len_1 and orig_len_2 */
     u64 dbSize = (dbHeaderSize + string1Size + string2Size)*sizeof(u64);
     // Computing DB's offsets for strings in the u64
     u64 string1Offset = dbHeaderSize;
@@ -410,6 +470,8 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     params[3]=(u64) n_tiles_width;
     params[4]=string1Offset;
     params[5]=string2Offset;
+    params[6] = (u64)orig_len_1; /* Original string 1 length */
+    params[7] = (u64)orig_len_2; /* Original string 2 length */
 
     i = 0; // Writing string 1 in DB
     s8 * string1Ptr = (s8*) &params[string1Offset];

@@ -10,5 +10,5 @@ add_executable(XSBench
 target_include_directories(XSBench PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
 )
-target_link_libraries(XSBench PRIVATE ocr)
+target_link_libraries(XSBench PRIVATE ocr m)
 install(TARGETS XSBench RUNTIME DESTINATION bin/apps/XSBench)

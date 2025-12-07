@@ -16,6 +16,7 @@ Here are current applications supported in this repository:
 - globalsum_shim
 - hpcg
 - hpgmg
+- npb-cg
 - p2p
 - quicksort
 - reduction
@@ -33,7 +34,7 @@ Here are current applications supported in this repository:
 - Stencil1D_david_once
 - Stencil1D_david_oncePI
 - Stencil1D_david_sticky
-- Stencil1D_david_stickyLG
+- Stencil1D_david_stickyLG (not supported)
 - Stencil2D
 - triangle
-- XSBench
+- XSBench (not supported)

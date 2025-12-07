@@ -351,18 +351,22 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                         1,
                         DB_MODE_RW );
 
-    ocrDbRelease( sendleftDb );
-    ocrAddDependence(   sendleftDb,
-                        temp,
-                        2,
-                        DB_MODE_RW );
+    /* For boundary nodes, pass NULL_GUID to indicate no neighbor.
+     * Node 0 (leftmost) has no left neighbor.
+     * Node n-1 (rightmost) has no right neighbor. */
+    if (private->mynode > 0) {
+      ocrDbRelease(sendleftDb);
+      ocrAddDependence(sendleftDb, temp, 2, DB_MODE_RW);
+    } else {
+      ocrAddDependence(NULL_GUID, temp, 2, DB_MODE_RW);
+    }
 
-    ocrDbRelease( sendrightDb );
-    ocrAddDependence(   sendrightDb,
-                        temp,
-                        3,
-                        DB_MODE_RW );
-
+    if (private->mynode < (private->n - 1)) {
+      ocrDbRelease(sendrightDb);
+      ocrAddDependence(sendrightDb, temp, 3, DB_MODE_RW);
+    } else {
+      ocrAddDependence(NULL_GUID, temp, 3, DB_MODE_RW);
+    }
 
     return NULL_GUID;
 }

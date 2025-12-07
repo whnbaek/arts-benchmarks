@@ -16,10 +16,9 @@ float tanh_approx(float val){
   den = 135135.0 + valsq * (62370.0 + valsq * (3150.0 + valsq * 28.0));
   return num / den;
 }
-void ABORT(int a) {
-}
 #endif
 
+void ABORT(int a) { ocrAbort(a); }
 
 double time() {
 #ifndef TG_ARCH

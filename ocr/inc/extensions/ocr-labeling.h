@@ -12,14 +12,11 @@
 #ifndef __OCR_LABELING_H__
 #define __OCR_LABELING_H__
 
-#define ENABLE_EXTENSION_LABELING
 #ifdef ENABLE_EXTENSION_LABELING
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include "ocr-types.h"
 
 // TODO: This may be valid for other things. Move into main API?
 // TODO: Needs to be in sync with ocr-guid-kind.h for now. This is obviously not ideal
