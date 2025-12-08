@@ -9,10 +9,10 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "${script_dir}/.." && pwd -P)"
 
-if [[ "$PWD" != "$repo_root" ]]; then
-	printf 'Please run scripts/run.sh from the repository root (%s)\n' "$repo_root" >&2
-	exit 1
-fi
+# if [[ "$PWD" != "$repo_root" ]]; then
+# 	printf 'Please run scripts/run.sh from the repository root (%s)\n' "$repo_root" >&2
+# 	exit 1
+# fi
 
 bin_dir="${repo_root}/.install/bin/ocr-apps"
 lib_dir="${repo_root}/.install/lib"
@@ -213,7 +213,9 @@ run_case "globalsum/globalsum_pcg" "default"
 # 7. hpcg
 # Usage: ./hpcg (no arguments, uses compile-time constants)
 ###############################################################################
-# log_info "=== 7. hpcg ==="
+log_info "=== 7. hpcg ==="
+log_warn "hpcg is currently not supported"
+mark_skip
 # run_case "hpcg/hpcg" "default"
 
 ###############################################################################
@@ -251,7 +253,9 @@ run_case "quicksort/quicksort" "default"
 # 12. reduction
 # Usage: ./reduction (no arguments, uses compile-time constants)
 ###############################################################################
-# log_info "=== 12. reduction ==="
+log_info "=== 12. reduction ==="
+log_warn "reduction is currently not supported"
+mark_skip
 # run_case "reduction/reduction" "default"
 
 ###############################################################################
@@ -270,12 +274,15 @@ for variant in tiny small medium large huge; do
 done
 # problem_size_scaling variant uses Parameter0.txt - Parameter9.txt
 sar_pss_dir="${bin_dir}/sar/problem_size_scaling"
-if [[ -d "$sar_pss_dir" && -f "${sar_pss_dir}/Parameter0.txt" ]]; then
-	run_case_in_dir "$sar_pss_dir" "sar/problem_size_scaling/problem_size_scaling" "problem_size_scaling"
-else
-	log_warn "Skipping SAR problem_size_scaling: directory or Parameter files missing"
-	mark_skip
-fi
+for i in {0..9}; do
+	if [[ -d "$sar_pss_dir" && -f "${sar_pss_dir}/Parameter${i}.txt" ]]; then
+		cp "${sar_pss_dir}/Parameter${i}.txt" "${sar_pss_dir}/Parameters.txt"
+		run_case_in_dir "$sar_pss_dir" "sar/problem_size_scaling/problem_size_scaling" "problem_size_scaling_${i}"
+	else
+		log_warn "Skipping SAR problem_size_scaling_${i}: directory or Parameter files missing"
+		mark_skip
+	fi
+done
 
 ###############################################################################
 # 14. skel (printf)
@@ -290,12 +297,20 @@ run_case "skel/printf" "default"
 ###############################################################################
 log_info "=== 15. smithwaterman ==="
 smithwaterman_dir="${bin_dir}/smithwaterman/datasets"
-for label in tiny small medium medium-large; do
+declare -A SMITH_TILES=(
+	[tiny]=2
+	[small]=3
+	[medium]=5
+	[medium-large]=10
+	[large]=1000
+)
+for label in tiny small medium medium-large large; do
 	s1="${smithwaterman_dir}/string1-${label}.txt"
 	s2="${smithwaterman_dir}/string2-${label}.txt"
 	score="${smithwaterman_dir}/score-${label}.txt"
+	tile=${SMITH_TILES[$label]:-10}
 	if [[ -f "$s1" && -f "$s2" && -f "$score" ]]; then
-		run_case "smithwaterman/smithwaterman" "${label}" 10 10 "$s1" "$s2" "$score"
+		run_case "smithwaterman/smithwaterman" "${label}" "$tile" "$tile" "$s1" "$s2" "$score"
 	else
 		log_warn "Skipping Smith-Waterman ${label}: missing dataset files"
 		mark_skip
@@ -316,11 +331,13 @@ stencil1d_david_variants=(
 	stencil1Donce
 	stencil1DoncePI
 	stencil1Dsticky
-	stencil1DstickyLG
+	# stencil1DstickyLG
 )
 for variant in "${stencil1d_david_variants[@]}"; do
 	run_case "Stencil1D/intel-david/${variant}" "$variant"
 done
+log_warn "Skipping Stencil1D/intel-david/stencil1DstickyLG: currently not supported"
+mark_skip
 
 ###############################################################################
 # 17. Stencil2D
@@ -356,4 +373,3 @@ printf '========================================\n'
 if (( STATS[failed] > 0 )); then
 	exit 1
 fi
-

@@ -25,6 +25,23 @@ foreach(VARIANT IN LISTS VARIANTS)
     target_include_directories(${VARIANT} PRIVATE ${VARIANT_DIR})
     add_dependencies(${VARIANT} crlibm_build)
     target_link_libraries(${VARIANT} PRIVATE ocr m crlibm)
+    target_compile_definitions(${VARIANT} PRIVATE
+        DEBUG_SSCP
+        RAG_TG_ARCH_NULL_GUID_WORKAROUND
+        RAG_NEW_BLK_SIZE=32
+        TRACE
+        RAG_DIG_SPOT_ON=0
+        RAG_AFFINE_ON=1
+        RAG_QSORT_ON=0
+        RAG_PURE_FLOAT
+        RAG_SINCOS
+        RAG_CRLIBM
+        RAG_PETER_DIST_AND_TRIG
+        RAG_SPAD
+        RAG_DRAM
+        GANESH_STRENGTH_RED_OPT
+        OCR
+    )
 
     set(VARIANT_INSTALL_DIR "bin/ocr-apps/sar/${VARIANT}")
     install(TARGETS ${VARIANT} RUNTIME DESTINATION ${VARIANT_INSTALL_DIR})

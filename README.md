@@ -14,12 +14,12 @@ Here are current applications supported in this repository:
 - globalsum_noshim
 - globalsum_pcg
 - globalsum_shim
-- hpcg
+- hpcg (not supported; reduction library based)
 - hpgmg
 - npb-cg
 - p2p
 - quicksort
-- reduction
+- reduction (not supported; reduction library based)
 - sar_huge
 - sar_large
 - sar_medium
@@ -37,4 +37,6 @@ Here are current applications supported in this repository:
 - Stencil1D_david_stickyLG (not supported)
 - Stencil2D
 - triangle
-- XSBench (not supported)
+- XSBench
+
+Reduction library based applications currently has some bugs; they may cause out-of-memory errors.
