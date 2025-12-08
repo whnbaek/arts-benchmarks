@@ -9,7 +9,7 @@ endif()
 
 add_custom_command(
     OUTPUT ${CRLIBM_LIBRARY}
-    COMMAND ${CMAKE_COMMAND} -E env ARCH=x86 ${CRLIBM_MAKE_EXECUTABLE} configure all check install
+    COMMAND ${CMAKE_COMMAND} -E env ARCH=x86 ${CRLIBM_MAKE_EXECUTABLE} configure all
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Building crlibm-1.0beta4 for x86"
     VERBATIM

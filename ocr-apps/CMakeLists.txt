@@ -6,8 +6,8 @@ endif()
 find_package(Threads REQUIRED)
 find_library(OCR_MATH_LIB m)
 
-set(CRLIBM_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/libs/x86/lib/libcrlibm.a")
-set(CRLIBM_HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/x86/include")
+set(CRLIBM_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/libs/src/crlibm-1.0beta4/x86/lib/libcrlibm.a")
+set(CRLIBM_HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/src/crlibm-1.0beta4/x86/include")
 add_subdirectory(libs/src/crlibm-1.0beta4)
 add_subdirectory(libs/src/reduction)
 
