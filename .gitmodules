@@ -1,3 +1,9 @@
 [submodule "external/arts"]
 	path = external/arts
 	url = git@github.com:whnbaek/ARTS.git
+[submodule "external/ocr"]
+	path = external/ocr
+	url = git@github.com:ModeladoFoundation/ocr.git
+[submodule "external/ocr-apps"]
+	path = external/ocr-apps
+	url = git@github.com:ModeladoFoundation/ocr-apps.git
