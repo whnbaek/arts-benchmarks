@@ -1,49 +1,71 @@
-option(ARTS_AUTO_INIT_SUBMODULE
-    "Automatically initialize the external/arts submodule when it is missing"
-    ON
+# ==============================================================================
+# Git Submodule Initialization
+# ==============================================================================
+# Check for .git file/directory to determine if submodule is initialized.
+# When a submodule is initialized, git creates a .git file (or directory) in it.
+
+set(EXTERNAL_SUBMODULES
+    "arts"
+    "ocr"
+    "ocr-apps"
 )
 
-set(ARTS_SUBMODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/arts")
-set(ARTS_SUBMODULE_ENTRY "${ARTS_SUBMODULE_PATH}/CMakeLists.txt")
+# Check which submodules need initialization
+set(SUBMODULES_TO_INIT "")
+foreach(SUBMODULE ${EXTERNAL_SUBMODULES})
+    set(SUBMODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE}")
+    set(SUBMODULE_GIT "${SUBMODULE_PATH}/.git")
 
-if(NOT EXISTS "${ARTS_SUBMODULE_ENTRY}")
-    if(NOT ARTS_AUTO_INIT_SUBMODULE)
-        message(FATAL_ERROR
-            "arts submodule not found at ${ARTS_SUBMODULE_PATH}. "
-            "Run 'git submodule update --init --recursive external/arts' "
-            "or configure with -DARTS_AUTO_INIT_SUBMODULE=ON.")
+    if(NOT EXISTS "${SUBMODULE_GIT}")
+        list(APPEND SUBMODULES_TO_INIT "external/${SUBMODULE}")
+        message(STATUS "Submodule '${SUBMODULE}' not initialized (missing ${SUBMODULE_GIT})")
     endif()
+endforeach()
 
+# Initialize any missing submodules
+if(SUBMODULES_TO_INIT)
     find_program(GIT_EXECUTABLE git)
     if(NOT GIT_EXECUTABLE)
         message(FATAL_ERROR
-            "git executable not found. Cannot initialize the arts submodule automatically.")
+            "git executable not found. Cannot initialize submodules automatically.\n"
+            "Please run: git submodule update --init --recursive")
     endif()
 
-    message(STATUS "arts submodule missing; initializing via git submodule update ...")
+    message(STATUS "Initializing submodules: ${SUBMODULES_TO_INIT}")
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive external/arts
+        COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive ${SUBMODULES_TO_INIT}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        RESULT_VARIABLE ARTS_SUBMODULE_RESULT
-        OUTPUT_VARIABLE ARTS_SUBMODULE_STDOUT
-        ERROR_VARIABLE ARTS_SUBMODULE_STDERR
+        RESULT_VARIABLE SUBMODULE_RESULT
+        OUTPUT_VARIABLE SUBMODULE_STDOUT
+        ERROR_VARIABLE SUBMODULE_STDERR
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_STRIP_TRAILING_WHITESPACE
     )
 
-    if(NOT ARTS_SUBMODULE_RESULT EQUAL 0)
+    if(NOT SUBMODULE_RESULT EQUAL 0)
         message(FATAL_ERROR
-            "Failed to initialize ARTS submodule (exit code ${ARTS_SUBMODULE_RESULT}).\n"
-            "stdout: ${ARTS_SUBMODULE_STDOUT}\n"
-            "stderr: ${ARTS_SUBMODULE_STDERR}")
+            "Failed to initialize submodules (exit code ${SUBMODULE_RESULT}).\n"
+            "stdout: ${SUBMODULE_STDOUT}\n"
+            "stderr: ${SUBMODULE_STDERR}\n"
+            "Please try manually: git submodule update --init --recursive")
     endif()
 
-    message(STATUS "ARTS submodule initialized successfully.")
+    message(STATUS "Submodules initialized successfully.")
 endif()
 
-if(NOT EXISTS "${ARTS_SUBMODULE_ENTRY}")
-    message(FATAL_ERROR
-        "ARTS submodule still missing at ${ARTS_SUBMODULE_PATH} after initialization attempt.")
-endif()
+# Verify all submodules are now present
+foreach(SUBMODULE ${EXTERNAL_SUBMODULES})
+    set(SUBMODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE}")
+    set(SUBMODULE_GIT "${SUBMODULE_PATH}/.git")
 
-add_subdirectory(${ARTS_SUBMODULE_PATH} ${CMAKE_BINARY_DIR}/external/arts)
+    if(NOT EXISTS "${SUBMODULE_GIT}")
+        message(FATAL_ERROR
+            "Submodule '${SUBMODULE}' still missing at ${SUBMODULE_PATH} after initialization.\n"
+            "Please try manually: git submodule update --init --recursive external/${SUBMODULE}")
+    endif()
+endforeach()
+
+# ==============================================================================
+# Add Subdirectories
+# ==============================================================================
+add_subdirectory(arts ${CMAKE_BINARY_DIR}/external/arts)

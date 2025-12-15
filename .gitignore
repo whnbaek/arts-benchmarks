@@ -1,8 +1,8 @@
-build/
-.install/
-.cache/
-.vscode/
+/build/
+/install/
+/.cache/
+/.vscode/
 /core.*
 /*.out
 /*.txt
-.artsPrintLock
+/.artsPrintLock
