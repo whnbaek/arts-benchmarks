@@ -1,3 +1,0 @@
-#!/bin/bash
-
-MPI=yes make -f Makefile.make_app

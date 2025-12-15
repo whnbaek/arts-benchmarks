@@ -1,5 +1,0 @@
-*.o
-XSBench
-ss_*
-build/
-install/

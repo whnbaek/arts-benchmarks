@@ -1,1 +1,0 @@
-../intel-chandra/stencil.h

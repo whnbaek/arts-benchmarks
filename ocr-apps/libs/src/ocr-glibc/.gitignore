@@ -1,4 +1,0 @@
-build-*/
-include/sys/
-# Vim swap files
-.*.swp

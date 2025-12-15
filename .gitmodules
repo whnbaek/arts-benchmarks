@@ -6,4 +6,4 @@
 	url = git@github.com:ModeladoFoundation/ocr.git
 [submodule "external/ocr-apps"]
 	path = external/ocr-apps
-	url = git@github.com:ModeladoFoundation/ocr-apps.git
+	url = git@github.com:whnbaek/ocr-apps.git
