@@ -1,9 +1,9 @@
 # ARTS Benchmark
 
-`apps` and `ocr` directories are from XSOCR project.
-We develope OCR based on ARTS and connected several benchmarks to ARTS-OCR.
-You can find license information of OCR and OCR-based applications in each directory.
-Here are current applications supported in this repository:
+Applications are from the XSOCR project.
+We developed an OCR based on ARTS and connected several benchmarks to ARTS-OCR.
+You can find the license information of OCR and OCR-based applications in each directory.
+Here are the current applications supported in this repository:
 
 - autoocr
 - basicIO
