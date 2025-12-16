@@ -5,11 +5,32 @@ We developed an OCR based on ARTS and connected several benchmarks to ARTS-OCR.
 You can find the license information of OCR and OCR-based applications in each directory.
 Here are the current applications supported in this repository:
 
-- autoocr
+## OCR Applications with Inter-node Hints
+
+- CoMD_intel-chandra-tiled
+- graph500
+- hpcg_intel
+- hpcg_intel-Eager
+- hpcg_intel-Eager-Collective
+- miniAMR_intel-chandra
+- nekbone
+- p2p
+- reduction_intel
+- RSBench_intel-sharedDB
+- Stencil1D_intel-chandra
+- Stencil1D_intel-david
+- Stencil2D_intel-chandra
+- Stencil2D_intel-channelEVTs
+- Stencil2D_intel-jiri
+- XSBench_intel-sharedDB
+
+These applications can be run by ARTS on multiple nodes with inter-node hints enabled.
+
+## Other OCR Applications
+
 - basicIO
 - cholesky
 - CoMD_intel-chandra
-- CoMD_intel-chandra-tiled
 - CoMD_sdsc
 - CoMD_sdsc2
 - curvefit
@@ -23,10 +44,6 @@ Here are the current applications supported in this repository:
 - fft
 - fibonacci
 - globalsum
-- graph500
-- hpcg_intel
-- hpcg_intel-Eager
-- hpcg_intel-Eager-Collective
 - hpgmg
 - dbctrl
 - prodcon
@@ -36,17 +53,12 @@ Here are the current applications supported in this repository:
 - miniAMR_forkbomb
 - miniAMR_intel
 - miniAMR_intel-bryan
-- miniAMR_intel-chandra
-- nekbone
 - npb-cg
 - nqueens
-- p2p
 - printf
 - quicksort
-- reduction_intel
 - reduction_intel-chandra
 - RSBench_intel
-- RSBench_intel-sharedDB
 - sar_datagen-tsml
 - sar_huge
 - sar_large
@@ -55,12 +67,6 @@ Here are the current applications supported in this repository:
 - sar_tiny
 - sar_problem_size_scaling
 - smithwaterman
-- Stencil1D_intel-chandra
-- Stencil1D_intel-david
-- Stencil2D_intel-chandra
-- Stencil2D_intel-channelEVTs
-- Stencil2D_intel-jiri
 - tempest_intel-bryan
 - triangle
 - XSBench_intel
-- XSBench_intel-sharedDB

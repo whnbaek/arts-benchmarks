@@ -31,7 +31,7 @@ function(add_ocr_app APP_NAME APP_DIR)
 
     add_custom_target(${APP_NAME}
         COMMAND ${CMAKE_COMMAND} -E env ${OCR_MAKE_ENV}
-        make -C "${APP_PATH}" ${APP_COMMAND}
+        make -C "${APP_PATH}" ${APP_COMMAND} install
         DEPENDS install_ocr
         COMMENT "Building OCR app: ${APP_NAME}"
         VERBATIM
@@ -39,7 +39,6 @@ function(add_ocr_app APP_NAME APP_DIR)
 endfunction()
 
 # Add OCR application targets
-add_ocr_app(autoocr "autoocr")
 add_ocr_app(basicIO "basicIO/ocr")
 add_ocr_app(cholesky "cholesky/ocr")
 add_ocr_app(CoMD_intel-chandra "CoMD/refactored/ocr/intel-chandra")
@@ -110,7 +109,6 @@ add_ocr_app(XSBench_intel-sharedDB "XSBench/refactored/ocr/intel-sharedDB")
 # Meta target to build all OCR apps (ALL makes it part of default build)
 add_custom_target(ocr_apps ALL
     DEPENDS
-    autoocr
     basicIO
     cholesky
     CoMD_intel-chandra
