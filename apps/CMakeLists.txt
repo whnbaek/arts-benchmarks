@@ -8,7 +8,7 @@ set(OCR_APPS_ROOT "${CMAKE_SOURCE_DIR}/external/ocr-apps/apps")
 # OCR_INSTALL points to installed library/headers
 # RUN_MODE=buildApp tells Makefile to NOT rebuild OCR, just use it
 # OCR_CONFIG=/dev/null skips config-generator.py (ARTS uses arts.cfg instead)
-set(OCR_MAKE_ENV
+set(MAKE_ENV
     "APPS_ROOT=${OCR_APPS_ROOT}"
     "OCR_INSTALL=${CMAKE_INSTALL_PREFIX}"
     "OCR_TYPE=x86"
@@ -28,9 +28,14 @@ function(add_ocr_app APP_NAME APP_DIR)
     else()
         set(APP_COMMAND "")
     endif()
+    if(ARGC GREATER 3)
+        foreach(i RANGE 3 ${ARGC})
+            list(APPEND MAKE_ENV "${ARGV${i}}")
+        endforeach()
+    endif()
 
     add_custom_target(${APP_NAME}
-        COMMAND ${CMAKE_COMMAND} -E env ${OCR_MAKE_ENV}
+        COMMAND ${CMAKE_COMMAND} -E env ${MAKE_ENV}
         make -C "${APP_PATH}" ${APP_COMMAND} install
         DEPENDS install_ocr
         COMMENT "Building OCR app: ${APP_NAME}"
@@ -38,9 +43,31 @@ function(add_ocr_app APP_NAME APP_DIR)
     )
 endfunction()
 
+include(FetchContent)
+find_package(MKL CONFIG QUIET)
+if(NOT MKL_FOUND)
+    message(STATUS "MKL not found locally. Downloading MKL Tarball (no installer)...")
+    FetchContent_Declare(
+        mkl
+        URL https://anaconda.org/anaconda/mkl/2025.0.0/download/linux-64/mkl-2025.0.0-hacee8c2_941.tar.bz2
+    )
+    FetchContent_MakeAvailable(mkl)
+    FetchContent_Declare(
+        mkl_include
+        URL https://anaconda.org/anaconda/mkl-include/2025.0.0/download/linux-64/mkl-include-2025.0.0-hc79277c_941.tar.bz2
+    )
+    FetchContent_MakeAvailable(mkl_include)
+    
+    # Merge MKL files into CMAKE_INSTALL_PREFIX (copy without overwriting existing)
+    file(COPY ${mkl_SOURCE_DIR}/ DESTINATION ${CMAKE_INSTALL_PREFIX})
+    file(COPY ${mkl_include_SOURCE_DIR}/ DESTINATION ${CMAKE_INSTALL_PREFIX})
+    message(STATUS "MKL merged into ${CMAKE_INSTALL_PREFIX}")
+endif()
+
 # Add OCR application targets
 add_ocr_app(basicIO "basicIO/ocr")
 add_ocr_app(cholesky "cholesky/ocr")
+add_ocr_app(cholesky_mkl "cholesky/ocr-mkl")
 add_ocr_app(CoMD_intel-chandra "CoMD/refactored/ocr/intel-chandra")
 add_ocr_app(CoMD_intel-chandra-tiled "CoMD/refactored/ocr/intel-chandra-tiled")
 add_ocr_app(CoMD_sdsc "CoMD/refactored/ocr/sdsc")
@@ -55,7 +82,9 @@ add_ocr_app(testlibs "examples/testlibs")
 add_ocr_app(xeonNumaSize "examples/xeonNumaSize")
 add_ocr_app(fft "fft/ocr")
 add_ocr_app(fibonacci "fibonacci/ocr")
-add_ocr_app(globalsum "globalsum/refactored/ocr/intel")
+add_ocr_app(globalsum_cgShim "globalsum/refactored/ocr/intel" "" "CODE_TYPE=1")
+add_ocr_app(globalsum_cgNoShim "globalsum/refactored/ocr/intel" "" "CODE_TYPE=2")
+add_ocr_app(globalsum_pcg "globalsum/refactored/ocr/intel" "" "CODE_TYPE=3")
 add_ocr_app(graph500 "graph500")
 add_ocr_app(hpcg_intel "hpcg/refactored/ocr/intel")
 add_ocr_app(hpcg_intel-Eager "hpcg/refactored/ocr/intel-Eager")
@@ -111,6 +140,7 @@ add_custom_target(ocr_apps ALL
     DEPENDS
     basicIO
     cholesky
+    cholesky_mkl
     CoMD_intel-chandra
     CoMD_intel-chandra-tiled
     CoMD_sdsc
@@ -125,7 +155,9 @@ add_custom_target(ocr_apps ALL
     xeonNumaSize
     fft
     fibonacci
-    globalsum
+    globalsum_cgShim
+    globalsum_cgNoShim
+    globalsum_pcg
     graph500
     hpcg_intel
     hpcg_intel-Eager

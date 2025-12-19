@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -13,6 +14,8 @@
 #define ENABLE_EXTENSION_COLLECTIVE_EVT
 #define ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_RTITF
+#define ENABLE_EXTENSION_CHANNEL_EVT
+#define ENABLE_EXTENSION_COUNTED_EVT
 
 #include "ocr-db.h"
 #include "ocr-edt.h"
@@ -26,9 +29,220 @@
 
 #define PRINTF ARTS_PRINTF_HIDDEN
 #include "arts/arts.h"
+#include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/RT.h"
 #undef PRINTF
+
+/* Helper to get datablock data pointer from its GUID.
+ * The DB structure is: [struct artsDb header][actual data]
+ * We look up the DB in the route table and offset past the header.
+ */
+static void *artsDbDataFromGuid(artsGuid_t dbGuid) {
+  void *ptr = artsRouteTableLookupItem(dbGuid);
+  if (ptr == NULL) {
+    return NULL;
+  }
+  /* Data follows immediately after the artsDb header */
+  return (void *)((struct artsDb *)ptr + 1);
+}
+
+/*
+ * ============================================================================
+ * Collective Event Support
+ * ============================================================================
+ *
+ * OCR collective events are implemented using an ARTS EDT with multiple slots.
+ * When all contributions arrive, the EDT runs and performs the reduction.
+ *
+ * Structure:
+ * - Each collective event is an ARTS EDT with nbContribs+1 input slots
+ * - Slot 0 holds metadata (reduction params, output dependents list)
+ * - Slots 1..nbContribs hold the contributed data values
+ * - When all slots are satisfied, the EDT runs the reduction
+ * - Result is broadcast to all registered dependents
+ *
+ * The metadata is stored in a datablock that gets updated when participants
+ * register their output dependencies via ocrAddDependenceSlot.
+ */
+
+/* Maximum number of dependents that can wait on a collective event result */
+#define MAX_COLLECTIVE_DEPENDENTS 256
+/* Maximum number of contributors */
+#define MAX_COLLECTIVE_CONTRIBS 256
+
+/* Metadata stored in a datablock for collective events.
+ * This supports multi-generation collective events where contributions
+ * are collected, reduced, and then the event resets for the next generation.
+ */
+typedef struct {
+  redOp_t op;            /* Reduction operation */
+  collectiveType_t type; /* COL_REDUCE, COL_ALLREDUCE, COL_BROADCAST */
+  u32 nbContribs;        /* Number of contributions expected per generation */
+  u32 nbDatum;           /* Number of datum per contribution */
+  u32 generation;        /* Current generation (for debugging) */
+  volatile u32 numDependents; /* Number of registered output dependents */
+  volatile u32
+      contribCount; /* Number of contributions received this generation */
+  volatile double
+      contributions[MAX_COLLECTIVE_CONTRIBS];        /* Contributed values */
+  volatile u8 contribFlags[MAX_COLLECTIVE_CONTRIBS]; /* Which slots have data */
+  artsGuid_t dependents[MAX_COLLECTIVE_DEPENDENTS];  /* Output event GUIDs */
+  u32 dependentSlots[MAX_COLLECTIVE_DEPENDENTS];     /* Output slots */
+  artsGuid_t metaDbGuid; /* Self-reference for updates */
+  artsGuid_t edtGuid;    /* Not used in new design, kept for compatibility */
+  pthread_mutex_t lock;  /* Mutex for thread-safe reduction */
+} CollectiveMetadata;
+
+/* Perform the reduction operation on two values */
+static double performReductionOp(double a, double b, redOp_t op) {
+  /* Extract operator from redOp_t (bits 7-9 per ocr-reduction-event.h) */
+  u32 opType = (op >> 7) & 0x7;
+  switch (opType) {
+  case 0:
+    return a + b; /* REDOP_ADD */
+  case 1:
+    return a * b; /* REDOP_MULT */
+  case 2:
+    return (a < b) ? a : b; /* REDOP_MIN */
+  case 3:
+    return (a > b) ? a : b; /* REDOP_MAX */
+  default:
+    return a + b;
+  }
+}
+
+/* Perform reduction when all contributions have arrived.
+ * This is called by the thread that provides the last contribution.
+ * IMPORTANT: Caller must hold meta->lock
+ */
+static void performCollectiveReduction(CollectiveMetadata *meta) {
+  /* Perform reduction across all contributed values */
+  double result = 0.0;
+  u32 firstValid = 1;
+
+  for (u32 i = 0; i < meta->nbContribs && i < MAX_COLLECTIVE_CONTRIBS; i++) {
+    if (meta->contribFlags[i]) {
+      if (firstValid) {
+        result = meta->contributions[i];
+        firstValid = 0;
+      } else {
+        result = performReductionOp(result, meta->contributions[i], meta->op);
+      }
+    }
+  }
+
+  /* Copy dependents locally before resetting - we'll satisfy them after
+   * releasing lock */
+  u32 numDeps = meta->numDependents;
+  artsGuid_t localDeps[MAX_COLLECTIVE_DEPENDENTS];
+  u32 localSlots[MAX_COLLECTIVE_DEPENDENTS];
+  for (u32 i = 0; i < numDeps && i < MAX_COLLECTIVE_DEPENDENTS; i++) {
+    localDeps[i] = meta->dependents[i];
+    localSlots[i] = meta->dependentSlots[i];
+    meta->dependents[i] = NULL_GUID;
+    meta->dependentSlots[i] = 0;
+  }
+
+  /* Reset for next generation BEFORE satisfying dependents */
+  meta->generation++;
+  meta->contribCount = 0;
+  meta->numDependents = 0;
+  for (u32 i = 0; i < MAX_COLLECTIVE_CONTRIBS; i++) {
+    meta->contribFlags[i] = 0;
+  }
+
+  /* Release lock before satisfying dependents to allow next generation to start
+   */
+  pthread_mutex_unlock(&meta->lock);
+
+  /* Satisfy all registered dependents with the result */
+  for (u32 i = 0; i < numDeps && i < MAX_COLLECTIVE_DEPENDENTS; i++) {
+    if (localDeps[i] != NULL_GUID) {
+      /* Create a new result datablock for each dependent */
+      void *resultPtr;
+      artsGuid_t resultDb =
+          artsDbCreate(&resultPtr, sizeof(double), ARTS_DB_READ);
+      *(double *)resultPtr = result;
+
+      artsType_t dstType = artsGuidGetType(localDeps[i]);
+      if (dstType == ARTS_EDT) {
+        artsSignalEdt(localDeps[i], localSlots[i], resultDb);
+      } else if (dstType == ARTS_EVENT) {
+        /* Check if event is still valid before satisfying */
+        if (!artsIsEventFired(localDeps[i])) {
+          artsEventSatisfySlot(localDeps[i], resultDb, localSlots[i]);
+        }
+      }
+    }
+  }
+
+  /* Re-acquire lock since caller expects it held */
+  pthread_mutex_lock(&meta->lock);
+}
+
+/* Global hash table to map collective event GUIDs to their metadata DBs.
+ * Using a larger table to reduce collisions. */
+#define COLLECTIVE_HASH_SIZE 4096
+
+typedef struct {
+  volatile artsGuid_t edtGuid;
+  volatile artsGuid_t metaDbGuid;
+} CollectiveMapEntry;
+
+static CollectiveMapEntry collectiveMetaMap[COLLECTIVE_HASH_SIZE] = {{0, 0}};
+
+static u32 collectiveHash(artsGuid_t guid) {
+  /* Use unsigned arithmetic to ensure non-negative index */
+  uint64_t val = (uint64_t)guid;
+  return (u32)(val % COLLECTIVE_HASH_SIZE);
+}
+
+/* Atomically register a collective event, returns true if we registered it,
+ * false if another thread already registered it. */
+static int tryRegisterCollectiveMeta(artsGuid_t key, artsGuid_t metaDbGuid) {
+  u32 idx = collectiveHash(key);
+  /* Linear probing to handle collisions */
+  for (u32 i = 0; i < COLLECTIVE_HASH_SIZE; i++) {
+    u32 probeIdx = (idx + i) % COLLECTIVE_HASH_SIZE;
+    artsGuid_t expected = NULL_GUID;
+
+    /* Try to atomically claim this slot */
+    if (__sync_bool_compare_and_swap(&collectiveMetaMap[probeIdx].edtGuid,
+                                     expected, key)) {
+      /* We got the slot - store the metadata */
+      collectiveMetaMap[probeIdx].metaDbGuid = metaDbGuid;
+      return 1; /* Success - we registered it */
+    }
+
+    /* Slot was taken - check if it's our key */
+    if (collectiveMetaMap[probeIdx].edtGuid == key) {
+      return 0; /* Another thread already registered this key */
+    }
+    /* Collision with different key, try next slot */
+  }
+  /* Hash table full */
+  return 0;
+}
+
+static artsGuid_t lookupCollectiveMeta(artsGuid_t edtGuid) {
+  u32 idx = collectiveHash(edtGuid);
+  /* Linear probing to find the entry */
+  for (u32 i = 0; i < COLLECTIVE_HASH_SIZE; i++) {
+    u32 probeIdx = (idx + i) % COLLECTIVE_HASH_SIZE;
+    if (collectiveMetaMap[probeIdx].edtGuid == edtGuid) {
+      /* Wait for metaDbGuid to be set */
+      while (collectiveMetaMap[probeIdx].metaDbGuid == NULL_GUID) {
+        __sync_synchronize(); /* Memory barrier */
+      }
+      return collectiveMetaMap[probeIdx].metaDbGuid;
+    }
+    if (collectiveMetaMap[probeIdx].edtGuid == NULL_GUID) {
+      return NULL_GUID; /* Not found */
+    }
+  }
+  return NULL_GUID;
+}
 
 /*
  * ============================================================================
@@ -72,32 +286,24 @@ u8 ocrEdtTemplateDestroy(ocrGuid_t guid) {
 
 /*
  * ============================================================================
- * EDT_PROP_FINISH Support - Epoch-based Termination Detection
+ * EDT_PROP_FINISH - Limited Support
  * ============================================================================
  *
  * OCR's EDT_PROP_FINISH flag means the output event should fire only after
- * the EDT AND all its child EDTs complete. We implement this using ARTS epochs.
+ * the EDT AND all its child EDTs complete. This requires distributed
+ * termination detection.
  *
- * When an EDT is created with EDT_PROP_FINISH and an outputEvent:
- *   1. We create a "finish helper EDT" that will satisfy the output event
- *   2. The finish helper's GUID is passed to the trampoline
- *   3. In the trampoline, we start an epoch with the finish helper as the
- * callback
- *   4. All child EDTs created during the OCR function are tracked by the epoch
- *   5. When the epoch terminates (all children done), finish helper runs
- *   6. Finish helper satisfies the output event
+ * LIMITATION: This implementation does NOT fully support EDT_PROP_FINISH.
+ * The output event fires when the parent EDT completes, regardless of
+ * whether child EDTs have finished. Applications relying on finish semantics
+ * should use explicit synchronization or call ocrShutdown() explicitly.
+ *
+ * The ARTS epoch mechanism has race conditions in single-rank mode that
+ * can cause hangs, so we don't use it for termination detection.
  */
 
-/* Helper EDT that satisfies the output event when finish epoch completes */
-static void finish_helper_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
-                              artsEdtDep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-
-  artsGuid_t outputEventGuid = (artsGuid_t)paramv[0];
-  artsEventSatisfySlot(outputEventGuid, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-}
+/* Thread-local storage - kept for API compatibility but not used */
+static __thread artsGuid_t currentFinishLatch = NULL_GUID;
 
 /*
  * ============================================================================
@@ -107,9 +313,8 @@ static void finish_helper_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
  * Layout of ARTS paramv for OCR EDTs:
  *   paramv[0] = function pointer (ocrEdt_t)
  *   paramv[1] = original paramc
- *   paramv[2] = finish helper EDT GUID (NULL_GUID if not a finish EDT)
- *   paramv[3] = output event GUID to satisfy on completion (NULL_GUID if none)
- *   paramv[4..4+paramc-1] = original paramv values
+ *   paramv[2] = output event GUID to satisfy on completion (NULL_GUID if none)
+ *   paramv[3..3+paramc-1] = original paramv values
  */
 
 static void ocr_edt_trampoline(uint32_t paramc, uint64_t *paramv, uint32_t depc,
@@ -118,19 +323,12 @@ static void ocr_edt_trampoline(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 
   ocrEdt_t func = (ocrEdt_t)paramv[0];
   u32 origParamc = (u32)paramv[1];
-  artsGuid_t finishHelperGuid = (artsGuid_t)paramv[2];
-  artsGuid_t outputEventGuid = (artsGuid_t)paramv[3];
-  u64 *origParamv = (origParamc > 0) ? &paramv[4] : NULL;
-
-  /* If this is a finish EDT, start an epoch before running the user function.
-   * All EDTs created by the user function will be tracked by this epoch.
-   * When the epoch terminates, the finish helper EDT will be signaled. */
-  if (finishHelperGuid != NULL_GUID) {
-    artsInitializeAndStartEpoch(finishHelperGuid, 0);
-  }
+  artsGuid_t outputEventGuid = (artsGuid_t)paramv[2];
+  u64 *origParamv = (origParamc > 0) ? &paramv[3] : NULL;
 
   /* Convert artsEdtDep_t to ocrEdtDep_t - keep on stack for better locality */
   ocrEdtDep_t ocrDepv[depc > 0 ? depc : 1];
+
   for (u32 i = 0; i < depc; i++) {
     ocrDepv[i].guid.guid = depv[i].guid;
     ocrDepv[i].ptr = depv[i].ptr;
@@ -142,12 +340,29 @@ static void ocr_edt_trampoline(uint32_t paramc, uint64_t *paramv, uint32_t depc,
    * event. */
   ocrGuid_t returnGuid = func(origParamc, origParamv, depc, ocrDepv);
 
-  /* For non-finish EDTs with output events, satisfy the event with the
-   * return value from the OCR function */
-  if (outputEventGuid != NULL_GUID && finishHelperGuid == NULL_GUID) {
+  /* Satisfy the output event with the return value from the OCR function.
+   * Note: For EDT_PROP_FINISH, this fires immediately when the parent EDT
+   * completes, NOT after all children complete. */
+  if (outputEventGuid != NULL_GUID) {
     artsEventSatisfySlot(outputEventGuid, returnGuid.guid,
                          ARTS_EVENT_LATCH_DECR_SLOT);
   }
+}
+
+/*
+ * Helper EDT for event->event dependencies.
+ * ARTS's artsAddDependence for event->event uses slot 0 which is invalid
+ * for latch events. This helper receives the signal from the source event
+ * and properly satisfies the destination event using LATCH_DECR_SLOT.
+ */
+static void event_relay_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
+                            artsEdtDep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+
+  artsGuid_t destEventGuid = (artsGuid_t)paramv[0];
+  artsGuid_t dataGuid = (depc > 0) ? depv[0].guid : NULL_GUID;
+  artsEventSatisfySlot(destEventGuid, dataGuid, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /*
@@ -160,6 +375,7 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
                 u64 *paramv, u32 depc, ocrGuid_t *depv, u16 properties,
                 ocrHint_t *hint, ocrGuid_t *outputEvent) {
   (void)hint;
+  (void)properties; /* EDT_PROP_FINISH not fully supported - see README */
 
   OcrEdtTemplate *templ = (OcrEdtTemplate *)templateGuid.guid;
   if (!templ) {
@@ -170,39 +386,24 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   u32 actualDepc = (depc == EDT_PARAM_DEF) ? templ->depc : depc;
 
   unsigned int route = artsGlobalRankId;
-  artsGuid_t finishHelperGuid = NULL_GUID;
   artsGuid_t outEvt = NULL_GUID;
 
-  /* Handle EDT_PROP_FINISH with output event using ARTS epochs */
-  if ((properties & EDT_PROP_FINISH) && outputEvent != NULL) {
-    /* Create the output event that will be satisfied when finish is complete */
+  /* Handle output event - for both regular and finish EDTs.
+   * Note: EDT_PROP_FINISH is NOT fully supported. The output event fires
+   * when the parent EDT completes, not when all children complete. */
+  if (outputEvent != NULL) {
     outEvt = artsEventCreate(route, 1);
     outputEvent->guid = outEvt;
-
-    /* Create a finish helper EDT that will satisfy the output event.
-     * This EDT is signaled by the epoch when all child EDTs complete. */
-    u64 helperParamv[1] = {(u64)outEvt};
-    finishHelperGuid =
-        artsEdtCreate(finish_helper_edt, route, 1, helperParamv, 1);
-  } else if (outputEvent != NULL) {
-    /* Non-finish EDT with output event - satisfy when EDT completes (in
-     * trampoline) */
-    outEvt = artsEventCreate(route, 1);
-    outputEvent->guid = outEvt;
-    /* Event will be satisfied by the trampoline after the OCR function returns
-     */
   }
 
-  /* Build the ARTS paramv: [funcPtr, origParamc, finishHelperGuid, outputEvent,
-   * origParamv...] */
-  u32 artsParamc = 4 + actualParamc;
+  /* Build the ARTS paramv: [funcPtr, origParamc, outputEvent, origParamv...] */
+  u32 artsParamc = 3 + actualParamc;
   u64 *artsParamv = (u64 *)artsCalloc(artsParamc, sizeof(u64));
   artsParamv[0] = (u64)(uintptr_t)templ->funcPtr;
   artsParamv[1] = (u64)actualParamc;
-  artsParamv[2] = (u64)finishHelperGuid;
-  artsParamv[3] = (u64)outEvt; /* Output event for non-finish EDTs */
+  artsParamv[2] = (u64)outEvt;
   if (actualParamc > 0 && paramv != NULL) {
-    memcpy(&artsParamv[4], paramv, actualParamc * sizeof(u64));
+    memcpy(&artsParamv[3], paramv, actualParamc * sizeof(u64));
   }
 
   artsGuid_t edtGuid = artsEdtCreate(ocr_edt_trampoline, route, artsParamc,
@@ -243,24 +444,37 @@ u8 ocrEdtDestroy(ocrGuid_t guid) {
  */
 
 u8 ocrEventCreate(ocrGuid_t *guid, ocrEventTypes_t eventType, u16 properties) {
+  unsigned int latchCount = 1; /* Default for sticky/once events */
+
+  if (eventType == OCR_EVENT_LATCH_T) {
+    latchCount = 0; /* Latch events start with count 0 */
+  }
+
+  /* Handle labeled GUID */
+  if (properties & GUID_PROP_IS_LABELED) {
+    /* artsEventCreateWithGuid now properly handles race conditions for labeled
+     * GUIDs */
+    artsGuid_t result = artsEventCreateWithGuid(guid->guid, latchCount);
+    if (result == NULL_GUID && (properties & GUID_PROP_CHECK)) {
+      /* Event already exists - return OCR_EGUIDEXISTS */
+      return OCR_EGUIDEXISTS;
+    }
+    return 0;
+  }
+
+  /* Non-labeled GUID - create new event */
   switch (eventType) {
   case OCR_EVENT_ONCE_T:
   case OCR_EVENT_STICKY_T:
   case OCR_EVENT_IDEM_T:
-    if (properties & GUID_PROP_IS_LABELED) {
-      artsEventCreateWithGuid(guid->guid, 1);
-    } else {
-      guid->guid = artsEventCreate(artsGlobalRankId, 1);
-    }
+  case OCR_EVENT_CHANNEL_T: /* Channel events treated as sticky for ARTS */
+    guid->guid = artsEventCreate(artsGlobalRankId, 1);
     break;
 
   case OCR_EVENT_LATCH_T:
-    if (properties & GUID_PROP_IS_LABELED) {
-      artsEventCreateWithGuid(guid->guid, 0);
-    } else {
-      guid->guid = artsEventCreate(artsGlobalRankId, 0);
-    }
+    guid->guid = artsEventCreate(artsGlobalRankId, 0);
     break;
+
   default:
     return 1; /* Unsupported event type */
   }
@@ -291,34 +505,138 @@ u8 ocrEventSatisfySlot(ocrGuid_t eventGuid, ocrGuid_t dataGuid, u32 slot) {
 
 /*
  * ocrEventCreateParams: Extended event creation with parameters.
- * This is used by OCR libraries (ocrAppUtils, reduction) for channel events etc.
- * In ARTS, we map this to regular events since ARTS doesn't have the same
- * channel/counted event semantics.
+ * This is used by OCR libraries for channel events, collective events, etc.
+ *
+ * For collective events (OCR_EVENT_COLLECTIVE_T), we create an ARTS EDT
+ * that acts as the reduction coordinator. The EDT has nbContribs+1 slots:
+ * - Slot 0: metadata DB (reduction params, output dependents)
+ * - Slots 1..nbContribs: contribution data from each participant
+ *
+ * With labeled GUIDs (GUID_PROP_IS_LABELED), the guid parameter already
+ * contains the desired GUID from ocrGuidFromIndex. We use that GUID and
+ * only create the event if it doesn't already exist.
  */
 u8 ocrEventCreateParams(ocrGuid_t *guid, ocrEventTypes_t eventType,
                         u16 properties, ocrEventParams_t *params) {
-  (void)params; /* ARTS doesn't use the extended parameters */
 
-  /* For now, delegate to regular event creation */
+  if (eventType == OCR_EVENT_COLLECTIVE_T && params != NULL) {
+    u32 nbContribs = params->EVENT_COLLECTIVE.nbContribs;
+    artsGuid_t labeledGuid = guid->guid; /* Input GUID from ocrGuidFromIndex */
+
+    /* For labeled GUIDs, check if already exists first (fast path) */
+    if ((properties & GUID_PROP_IS_LABELED) && labeledGuid != NULL_GUID) {
+      artsGuid_t existingMeta = lookupCollectiveMeta(labeledGuid);
+      if (existingMeta != NULL_GUID) {
+        /* Event already exists, just return the same GUID */
+        return 0;
+      }
+    }
+
+    /* Create metadata datablock - larger to hold contribution data */
+    void *metaPtr;
+    artsGuid_t metaDb =
+        artsDbCreate(&metaPtr, sizeof(CollectiveMetadata), ARTS_DB_READ);
+    CollectiveMetadata *meta = (CollectiveMetadata *)metaPtr;
+
+    meta->op = params->EVENT_COLLECTIVE.op;
+    meta->type = params->EVENT_COLLECTIVE.type;
+    meta->nbContribs = nbContribs;
+    meta->nbDatum = params->EVENT_COLLECTIVE.nbDatum;
+    meta->generation = 0;
+    meta->numDependents = 0;
+    meta->contribCount = 0;
+    meta->metaDbGuid = metaDb;
+    meta->edtGuid = NULL_GUID; /* Not used in new design */
+    pthread_mutex_init(&meta->lock, NULL);
+
+    for (u32 i = 0; i < MAX_COLLECTIVE_CONTRIBS; i++) {
+      meta->contributions[i] = 0.0;
+      meta->contribFlags[i] = 0;
+    }
+    for (u32 i = 0; i < MAX_COLLECTIVE_DEPENDENTS; i++) {
+      meta->dependents[i] = NULL_GUID;
+      meta->dependentSlots[i] = 0;
+    }
+
+    /* For labeled GUIDs, try to atomically register */
+    if ((properties & GUID_PROP_IS_LABELED) && labeledGuid != NULL_GUID) {
+      if (!tryRegisterCollectiveMeta(labeledGuid, metaDb)) {
+        /* Another thread registered first - we lost the race.
+         * Our metaDb is leaked but that's acceptable for correctness. */
+        return 0;
+      }
+      /* Return the labeled GUID (already in guid->guid) */
+      return 0;
+    }
+
+    /* Non-labeled: register with metaDb GUID as key */
+    tryRegisterCollectiveMeta(metaDb, metaDb);
+    guid->guid = metaDb; /* Return metadata DB GUID as the event GUID */
+    return 0;
+  }
+
+  /* For other event types, delegate to regular event creation */
   return ocrEventCreate(guid, eventType, properties);
 }
 
 /*
- * WARN: !!! This is wrong implementation !!!
- * ocrEventCollectiveSatisfySlot: Satisfy a slot on a collective/reduction event.
- * This is used for reduction events where multiple participants contribute data.
- * In ARTS, we don't have native reduction events, so we satisfy the event slot
- * with the data pointer cast to a GUID (for passing small values) or NULL_GUID.
+ * ocrEventCollectiveSatisfySlot: Contribute data to a collective/reduction
+ * event.
+ *
+ * Multi-generation design:
+ * - Each contribution is stored in the metadata array
+ * - When all contributions arrive, the last contributor triggers reduction
+ * - After reduction, the event resets for the next generation
  */
 u8 ocrEventCollectiveSatisfySlot(ocrGuid_t eventGuid, void *dataPtr, u32 islot) {
-  if (artsIsEventFired(eventGuid.guid)) {
+  /* Look up the metadata */
+  artsGuid_t metaDbGuid = lookupCollectiveMeta(eventGuid.guid);
+
+  if (metaDbGuid == NULL_GUID) {
+    /* Not found - might be a regular event, fall back */
+    if (artsIsEventFired(eventGuid.guid)) {
+      return 1;
+    }
+    artsGuid_t dataGuid =
+        (dataPtr != NULL) ? (artsGuid_t)(uintptr_t)dataPtr : NULL_GUID;
+    artsEventSatisfySlot(eventGuid.guid, dataGuid, islot);
+    return 0;
+  }
+
+  CollectiveMetadata *meta =
+      (CollectiveMetadata *)artsDbDataFromGuid(metaDbGuid);
+  if (meta == NULL) {
     return 1;
   }
-  /* In a full implementation, dataPtr would point to reduction data.
-   * Since ARTS doesn't support collective reduction natively, we just
-   * satisfy the slot. The dataPtr could be used to pass a small value. */
-  artsGuid_t dataGuid = (dataPtr != NULL) ? (artsGuid_t)(uintptr_t)dataPtr : NULL_GUID;
-  artsEventSatisfySlot(eventGuid.guid, dataGuid, islot);
+
+  /* Get the contributed value */
+  double value = 0.0;
+  if (dataPtr != NULL) {
+    value = *(double *)dataPtr;
+  }
+
+  /* Lock to safely update contribution data */
+  pthread_mutex_lock(&meta->lock);
+
+  /* Store the contribution */
+  if (islot < MAX_COLLECTIVE_CONTRIBS) {
+    meta->contributions[islot] = value;
+    meta->contribFlags[islot] = 1;
+  }
+
+  /* Increment contribution count and check if we're the last */
+  u32 newCount = ++meta->contribCount;
+  u32 isLast = (newCount == meta->nbContribs);
+
+  /* If we're the last contribution, trigger the reduction while still holding
+   * lock. performCollectiveReduction will handle lock release/reacquire
+   * internally. */
+  if (isLast) {
+    performCollectiveReduction(meta);
+  }
+
+  pthread_mutex_unlock(&meta->lock);
+
   return 0;
 }
 
@@ -362,32 +680,92 @@ u8 ocrAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
 
   if (ocrGuidIsNull(source)) {
     /* NULL_GUID means the dependence is immediately satisfied with no data */
-    artsSignalEdtValue(destination.guid, slot, 0);
+    artsType_t dstType = artsGuidGetType(destination.guid);
+    if (dstType == ARTS_EDT) {
+      artsSignalEdtValue(destination.guid, slot, 0);
+    } else if (dstType == ARTS_EVENT) {
+      /* Satisfy event with NULL data - use latch decrement for OCR events */
+      artsEventSatisfySlot(destination.guid, NULL_GUID,
+                           ARTS_EVENT_LATCH_DECR_SLOT);
+    }
     return 0;
   }
 
   artsType_t srcType = artsGuidGetType(source.guid);
+  artsType_t dstType = artsGuidGetType(destination.guid);
 
   /* Check if source is a DB (ARTS_DB_READ through ARTS_DB_LC) */
   if (srcType >= ARTS_DB_READ && srcType <= ARTS_DB_LC) {
-    /* For DBs, use artsSignalEdt to directly satisfy the EDT slot */
-    artsSignalEdt(destination.guid, slot, source.guid);
-  } else {
-    /* For events, use artsAddDependence to set up the connection */
+    if (dstType == ARTS_EDT) {
+      /* For DBs -> EDT, use artsSignalEdt to directly satisfy the EDT slot */
+      artsSignalEdt(destination.guid, slot, source.guid);
+    } else if (dstType == ARTS_EVENT) {
+      /* For DBs -> Event, satisfy the event with the DB data.
+       * This is OCR's way of "satisfying" a sticky event with data. */
+      artsEventSatisfySlot(destination.guid, source.guid,
+                           ARTS_EVENT_LATCH_DECR_SLOT);
+    }
+  } else if (dstType == ARTS_EDT) {
+    /* For events -> EDT, use artsAddDependence to set up the connection */
     artsAddDependence(source.guid, destination.guid, slot);
+  } else if (dstType == ARTS_EVENT) {
+    /* For events -> Event in OCR, when source fires, it should decrement
+     * the destination's latch count. ARTS's artsAddDependence doesn't handle
+     * this correctly (it uses slot 0 which is invalid for latch events).
+     * We directly check if source is fired and satisfy destination. */
+    struct artsEvent *srcEvent =
+        (struct artsEvent *)artsRouteTableLookupItem(source.guid);
+    if (srcEvent && srcEvent->fired) {
+      /* Source already fired - immediately satisfy destination */
+      artsEventSatisfySlot(destination.guid, srcEvent->data,
+                           ARTS_EVENT_LATCH_DECR_SLOT);
+    } else {
+      /* Source not fired yet - we need to add as dependent.
+       * But ARTS will use slot=0 when firing, which is wrong.
+       * For now, we'll add an EDT as intermediary. */
+      /* WORKAROUND: Create a tiny helper EDT that just satisfies the event */
+      u64 helperParamv[1] = {(u64)destination.guid};
+      artsGuid_t helperEdt =
+          artsEdtCreate(event_relay_edt, artsGlobalRankId, 1, helperParamv, 1);
+      artsAddDependence(source.guid, helperEdt, 0);
+    }
   }
   return 0;
 }
 
 /*
  * ocrAddDependenceSlot: Add dependence with source slot specification.
- * This is used for multi-output events where the source has multiple slots.
- * In ARTS, we don't have multi-output slots, so we ignore sslot and delegate
- * to regular ocrAddDependence.
+ * This is used for multi-output events and collective events.
+ *
+ * For collective events:
+ * - The source is the collective event GUID (may be labeled or EDT)
+ * - We need to register the destination to receive the reduction result
+ * - This is done by updating the metadata in the collective event
  */
 u8 ocrAddDependenceSlot(ocrGuid_t source, u32 sslot, ocrGuid_t destination,
                         u32 dslot, ocrDbAccessMode_t mode) {
-  (void)sslot; /* ARTS doesn't support multi-output slots */
+  (void)mode;
+  (void)sslot;
+
+  /* Try to look up as a collective event (by labeled GUID or EDT GUID) */
+  artsGuid_t metaDbGuid = lookupCollectiveMeta(source.guid);
+
+  if (metaDbGuid != NULL_GUID) {
+    /* This is a collective event - register the dependent in metadata */
+    CollectiveMetadata *meta =
+        (CollectiveMetadata *)artsDbDataFromGuid(metaDbGuid);
+    if (meta != NULL) {
+      /* Atomically add the dependent */
+      u32 idx = __sync_fetch_and_add(&meta->numDependents, 1);
+      if (idx < MAX_COLLECTIVE_DEPENDENTS) {
+        meta->dependents[idx] = destination.guid;
+        meta->dependentSlots[idx] = dslot;
+      }
+    }
+    return 0;
+  }
+
+  /* Not a collective event - delegate to regular ocrAddDependence */
   return ocrAddDependence(source, destination, dslot, mode);
 }
 
@@ -503,9 +881,11 @@ static artsType_t kindToArtsType(ocrGuidUserKind kind) {
   case GUID_USER_EDT_TEMPLATE:
     return ARTS_EDT;
   case GUID_USER_EVENT_ONCE:
-  case GUID_USER_EVENT_STICKY:
+  case GUID_USER_EVENT_COUNTED:
   case GUID_USER_EVENT_IDEM:
+  case GUID_USER_EVENT_STICKY:
   case GUID_USER_EVENT_LATCH:
+  case GUID_USER_EVENT_COLLECTIVE:
     return ARTS_EVENT;
   default:
     return ARTS_NULL;

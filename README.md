@@ -70,3 +70,17 @@ These applications can be run by ARTS on multiple nodes with inter-node hints en
 - tempest_intel-bryan
 - triangle
 - XSBench_intel
+
+## Known Limitations
+
+### EDT_PROP_FINISH Termination Detection Not Supported
+
+The OCR `EDT_PROP_FINISH` flag is designed to make an EDT's output event fire only after the EDT **and all its child EDTs** complete. This requires distributed termination detection.
+
+**Current behavior**: In this ARTS-OCR implementation, `EDT_PROP_FINISH` behaves the same as a regular EDT - the output event fires when the parent EDT completes, regardless of whether child EDTs have finished.
+
+**Workaround**: Applications that rely on `EDT_PROP_FINISH` semantics for proper termination should:
+1. Use explicit synchronization (e.g., latch events) to track child completion
+2. Call `ocrShutdown()` explicitly when the application is done
+
+This limitation exists because ARTS's epoch-based termination detection has race conditions in single-rank mode that can cause hangs.
