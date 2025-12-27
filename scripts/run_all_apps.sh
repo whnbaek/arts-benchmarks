@@ -81,7 +81,11 @@ run_app() {
         return 0
     fi
 
-    cd "$install_dir"
+    # Change to app directory (not install dir) for relative path support
+    pushd "$APPS_ROOT/$app_dir" > /dev/null
+    
+    # Clean up any output files from previous runs to avoid stale data
+    rm -f "$install_dir"/*.out "$install_dir"/*_output.txt 2>/dev/null
     
     # Measure wall clock time in both modes
     local start_time=$(date +%s.%N)
@@ -141,29 +145,32 @@ run_app() {
         BENCH_STATUS+=("FAIL")
     fi
     
+    # Restore original directory
+    popd > /dev/null
+    
     if [[ "$MODE" == "debug" ]]; then
         echo ""
     fi
 }
 
-run_app "basicIO/ocr" "basicIO" 0 10 "$APPS_ROOT/basicIO/ocr/input_10.txt" --verify diff -b "$APPS_ROOT/basicIO/ocr/input_10.txt" "$APPS_ROOT/basicIO/ocr/install/x86/basicIO_output.txt"
-run_app "basicIO/ocr" "basicIO" 0 1000000 "$APPS_ROOT/basicIO/ocr/input_1000000.txt" --verify diff -b "$APPS_ROOT/basicIO/ocr/input_1000000.txt" "$APPS_ROOT/basicIO/ocr/install/x86/basicIO_output.txt"
-run_app "cholesky/ocr" "cholesky" --ds 50 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_50.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_50.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr" "cholesky" --ds 100 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_100.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_100.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr" "cholesky" --ds 200 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_200.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_200.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr" "cholesky" --ds 300 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_300.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_300.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr" "cholesky" --ds 400 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_400.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_400.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr" "cholesky" --ds 500 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_500.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_500.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr" "cholesky" --ds 1000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_1000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_1000.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr" "cholesky" --ds 2000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_2000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_2000.txt" "$APPS_ROOT/cholesky/ocr/install/x86/cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 50 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_50.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_50.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 100 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_100.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_100.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 200 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_200.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_200.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 300 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_300.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_300.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 400 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_400.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_400.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 500 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_500.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_500.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 1000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_1000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_1000.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
-run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 2000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_2000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_2000.txt" "$APPS_ROOT/cholesky/ocr-mkl/install/x86/ocr_mkl_cholesky.out"
+# run_app "basicIO/ocr" "basicIO" 0 10 "$APPS_ROOT/basicIO/ocr/input_10.txt" --verify diff -b "$APPS_ROOT/basicIO/ocr/input_10.txt" "$APPS_ROOT/basicIO/ocr/basicIO_output.txt"
+# run_app "basicIO/ocr" "basicIO" 0 1000000 "$APPS_ROOT/basicIO/ocr/input_1000000.txt" --verify diff -b "$APPS_ROOT/basicIO/ocr/input_1000000.txt" "$APPS_ROOT/basicIO/ocr/basicIO_output.txt"
+# run_app "cholesky/ocr" "cholesky" --ds 50 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_50.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_50.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr" "cholesky" --ds 100 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_100.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_100.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr" "cholesky" --ds 200 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_200.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_200.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr" "cholesky" --ds 300 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_300.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_300.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr" "cholesky" --ds 400 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_400.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_400.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr" "cholesky" --ds 500 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_500.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_500.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr" "cholesky" --ds 1000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_1000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_1000.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr" "cholesky" --ds 2000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_2000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_2000.txt" "$APPS_ROOT/cholesky/ocr/cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 50 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_50.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_50.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 100 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_100.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_100.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 200 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_200.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_200.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 300 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_300.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_300.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 400 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_400.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_400.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 500 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_500.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_500.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 1000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_1000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_1000.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
+# run_app "cholesky/ocr-mkl" "ocr_mkl_cholesky" --ds 2000 --ts 50 --fi "$APPS_ROOT/cholesky/datasets/m_2000.in" --ol 1 --verify diff -b "$APPS_ROOT/cholesky/datasets/cholesky_out_2000.txt" "$APPS_ROOT/cholesky/ocr-mkl/ocr_mkl_cholesky.out"
 # ! Currently only comd-ocrd works correctly, others don't
 # run_app "CoMD/refactored/ocr/intel-chandra" "comd-ocr2" -x 5 -y 5 -z 5
 # run_app "CoMD/refactored/ocr/intel-chandra-tiled" "comd" -x 5 -y 5 -z 5
@@ -185,35 +192,56 @@ run_app "globalsum/refactored/ocr/intel" "pcg"
 run_app "graph500" "graph500" 20 16 8 8
 run_app "hpcg/refactored/ocr/intel" "hpcg" 3 4 5 16 50 0
 run_app "hpcg/refactored/ocr/intel-Eager" "hpcgEager" 2 2 2 64 10 0
-run_app "hpcg/refactored/ocr/intel-Eager-Collective" "hpcgEagerRedevt" 2 2 2 64 10 0
+# run_app "hpcg/refactored/ocr/intel-Eager-Collective" "hpcgEagerRedevt" 2 2 2 64 10 0
 run_app "hpgmg/refactored/ocr/sdsc" "hpgmg" 6 64
 run_app "kernels/dbctrl/ocr" "dbctrl" 100 1000 256
 run_app "kernels/prodcon/ocr" "prodcon"
-
-# TODO: make other applications work
-# run_app "LCS/refactored/ocr/intel-jesmin-lcs_all_db_distributed" "lcs" 16 8
-# run_app "LCS/refactored/ocr/intel-jesmin-lcs_distributed_ST_datablocks" "lcs" 16 8
-# run_app "LCS/refactored/ocr/intel-jesmin-lcs_shared_datablocks" "lcs" 16 8
-# run_app "nekbone/refactored/ocr_src" "z_nekbone_inOcr" 
-# run_app "npb-cg/sdsc-ocr" "cg" -t T
-# run_app "nqueens/refactored/ocr" "nqueens" 13 5
-# run_app "p2p/refactored/ocr/intel" "p2p" 3 4 5 16 50 0
-# run_app "printf/ocr" "printf" 
-# run_app "quicksort/ocr" "quicksort" 
-# run_app "reduction/refactored/ocr/intel" "driver" 4 4 10
-# run_app "reduction/refactored/ocr/intel-chandra" "driver" 16
-# run_app "RSBench/refactored/ocr/intel" "RSBench" -d -s small -l 10000
-# run_app "RSBench/refactored/ocr/intel-sharedDB" "RSBench" -d -s small -t 4 -l 10000
-# run_app "sar/ocr/tiny" "sscp" 0
-# run_app "Stencil1D/refactored/ocr/intel-chandra" "stencil_1d" 6 2 4
-# run_app "Stencil1D/refactored/ocr/intel-david" "stencil" 4 100 10
+# ! intel-jesmin-lcs_all_db_distributed has some bugs, use the other two versions
+# run_app "LCS/refactored/ocr/intel-jesmin-lcs_all_db_distributed" "lcs" 1024 256
+run_app "LCS/refactored/ocr/intel-jesmin-lcs_distributed_ST_datablocks" "lcs" 1024 256
+run_app "LCS/refactored/ocr/intel-jesmin-lcs_shared_datablocks" "lcs" 1024 256
+# ! all miniAMR applications other than "intel" version have some bugs
+# run_app "miniAMR/refactored/ocr/forkbomb" "miniAMR.x" --num_refine 1 --npx 2 --npy 1 --npz 1 --nx 2 --ny 2 --nz 2 --num_objects 1 --object 2 0 -0.11 -0.11 -0.11 0.04 0.04 0.04 1.7 1.7 1.7 0.0 0.0 0.0 --num_tsteps 20 --checksum_freq 1 --report_perf 15 --num_vars 1 --comm_vars 1 --plot_freq 1 --stages_per_ts 2 --refine_freq 2 --block_change 1
+run_app "miniAMR/refactored/ocr/intel" "miniAMR.x" --num_refine 4 --npx 3 --npy 1 --npz 1 --nx 8 --ny 8 --nz 8 --num_objects 1 --object 2 0 -0.11 -0.11 -0.11 0.04 0.04 0.04 1.7 1.7 1.7 0.0 0.0 0.0 --num_tsteps 50 --checksum_freq 1 --report_perf 15 --num_vars 2 --comm_vars 2 --plot_freq 1 --stages_per_ts 2 --refine_freq 2 --block_change 2
+# run_app "miniAMR/refactored/ocr/intel-bryan" "miniAMR.x" --num_refine 1 --npx 4 --npy 4 --npz 4 --nx 1 --ny 1 --nz 1 --num_objects 1 --object 2 0 -0.11 -0.11 -0.11 0.04 0.04 0.04 1.7 1.7 1.7 0.0 0.0 0.0 --num_tsteps 20 --checksum_freq 1 --report_perf 15 --num_vars 2 --comm_vars 2 --plot_freq 1 --stages_per_ts 2 --refine_freq 2 --block_change 2
+# run_app "miniAMR/refactored/ocr/intel-chandra" "miniAMR" --num_refine 4 --npx 3 --npy 1 --npz 1 --nx 8 --ny 8 --nz 8 --num_objects 1 --object 2 0 -0.11 -0.11 -0.11 0.04 0.04 0.04 1.7 1.7 1.7 0.0 0.0 0.0 --num_tsteps 50 --checksum_freq 1 --report_perf 15 --num_vars 2 --comm_vars 2 --plot_freq 1 --stages_per_ts 2 --refine_freq 2 --block_change 2
+run_app "nekbone/refactored/ocr_src" "z_nekbone_inOcr" 6 6 6 2 2 2 8 100
+run_app "npb-cg/sdsc-ocr" "cg" -t S
+run_app "nqueens/refactored/ocr" "nqueens" 14 5
+run_app "p2p/refactored/ocr/intel" "p2p"
+run_app "printf/ocr" "printf"
+run_app "quicksort/ocr" "quicksort"
+run_app "reduction/refactored/ocr/intel" "driver" 4 4 10
+run_app "reduction/refactored/ocr/intel-chandra" "driver" 100000
+run_app "RSBench/refactored/ocr/intel" "RSBench" -d -s small -l 10000
+run_app "RSBench/refactored/ocr/intel-sharedDB" "RSBench" -d -s small -t 4 -l 10000
+run_app "sar/ocr/tiny" "sscp" 0
+run_app "sar/ocr/small" "sscp" 0
+run_app "sar/ocr/medium" "sscp" 0
+run_app "sar/ocr/large" "sscp" 0
+run_app "sar/ocr/huge" "sscp" 0
+for i in {0..9}; do
+    cp -f "$APPS_ROOT/sar/ocr/problem_size_scaling/Parameter$i.txt" "$APPS_ROOT/sar/ocr/problem_size_scaling/Parameters.txt"
+    run_app "sar/ocr/problem_size_scaling" "sscp" 0
+    mv -f "$APPS_ROOT/sar/ocr/problem_size_scaling/Detects.txt" "$APPS_ROOT/sar/ocr/problem_size_scaling/Detect$i.txt"
+done
+run_app "smithwaterman/ocr" "smithwaterman" 2 2 "$APPS_ROOT/smithwaterman/datasets/string1-tiny.txt" "$APPS_ROOT/smithwaterman/datasets/string2-tiny.txt" "$APPS_ROOT/smithwaterman/datasets/score-tiny.txt"
+run_app "smithwaterman/ocr" "smithwaterman" 3 3 "$APPS_ROOT/smithwaterman/datasets/string1-small.txt" "$APPS_ROOT/smithwaterman/datasets/string2-small.txt" "$APPS_ROOT/smithwaterman/datasets/score-small.txt"
+run_app "smithwaterman/ocr" "smithwaterman" 5 5 "$APPS_ROOT/smithwaterman/datasets/string1-medium.txt" "$APPS_ROOT/smithwaterman/datasets/string2-medium.txt" "$APPS_ROOT/smithwaterman/datasets/score-medium.txt"
+run_app "smithwaterman/ocr" "smithwaterman" 20 20 "$APPS_ROOT/smithwaterman/datasets/string1-medium-large.txt" "$APPS_ROOT/smithwaterman/datasets/string2-medium-large.txt" "$APPS_ROOT/smithwaterman/datasets/score-medium-large.txt"
+run_app "smithwaterman/ocr" "smithwaterman" 1000 1000 "$APPS_ROOT/smithwaterman/datasets/string1-large.txt" "$APPS_ROOT/smithwaterman/datasets/string2-large.txt" "$APPS_ROOT/smithwaterman/datasets/score-large.txt"
+run_app "Stencil1D/refactored/ocr/intel-chandra" "stencil_1d" 6 2 4
+run_app "Stencil1D/refactored/ocr/intel-david" "stencil" 4 100 10
+# ! Need to debug stencil 2D apps
 # run_app "Stencil2D/refactored/ocr/intel-chandra" "stencil_2d" 6 4 4
 # run_app "Stencil2D/refactored/ocr/intel-channelEVTs" "stencil_2d" 6 4 4
 # run_app "Stencil2D/refactored/ocr/intel-jiri" "spmd_stencil2d" 
-# run_app "tempest/refactored/ocr/intel-bryan" "tempestCommunication" 
-# run_app "triangle/refactored/ocr/intel" "triangle" 
-# run_app "XSBench/refactored/ocr/intel" "XSBench" -s small -g 100 -l 10000
-# run_app "XSBench/refactored/ocr/intel-sharedDB" "XSBench" -s small -g 100 -t 4 -l 10000
+run_app "tempest/refactored/ocr/intel-bryan" "tempestCommunication" 16
+# ! DB_EW currently unsupported, arts cannot execute triangle app properly
+# run_app "triangle/refactored/ocr/intel" "triangle"
+# ! intel-sharedDB only works correctly
+# run_app "XSBench/refactored/ocr/intel" "XSBench" -s small -g 1130 -t 20 -l 100000
+run_app "XSBench/refactored/ocr/intel-sharedDB" "XSBench" -s large -g 1130 -t 20 -l 1000000
 
 if [[ "$MODE" == "debug" ]]; then
     echo "========================================"

@@ -32,6 +32,8 @@
 #include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/RT.h"
+#include "arts/runtime/sync/TerminationDetection.h"
+#include "arts/runtime/compute/EdtFunctions.h"
 #undef PRINTF
 
 /* Helper to get datablock data pointer from its GUID.
@@ -192,6 +194,181 @@ typedef struct {
 
 static CollectiveMapEntry collectiveMetaMap[COLLECTIVE_HASH_SIZE] = {{0, 0}};
 
+/*
+ * ============================================================================
+ * Channel Event Support
+ * ============================================================================
+ *
+ * OCR channel events (OCR_EVENT_CHANNEL_T) are multi-use producer-consumer
+ * events. Each ocrEventSatisfy produces a value and each ocrAddDependence
+ * consumes one. They operate in a FIFO manner.
+ *
+ * Implementation: For each generation, we create a fresh ARTS event.
+ * - addDependence registers a consumer waiting for generation N
+ * - satisfy provides data for generation N and increments generation
+ *
+ * The key insight is that addDependence and satisfy can happen in any order:
+ * - If addDependence happens first: consumer waits on the event
+ * - If satisfy happens first: event is already satisfied, consumer gets data
+ *
+ * We use separate counters for satisfy (producer) and addDependence (consumer)
+ * to match them up correctly.
+ */
+
+#define CHANNEL_HASH_SIZE 4096
+/* Max buffered events per channel (sliding window). Must be large enough
+ * to handle how far ahead the producer can get before consumer catches up.
+ * For p2p with 1000 rows × 100 timesteps, 2048 provides enough headroom. */
+#define CHANNEL_QUEUE_SIZE 2048
+
+/* Channel event queue entry - one per generation within the sliding window */
+typedef struct {
+  artsGuid_t eventGuid;   /* Event GUID for this generation */
+  u32 generation;         /* Which generation this slot holds */
+} ChannelQueueEntry;
+
+/* Channel event metadata - sliding window of events for producer-consumer matching */
+typedef struct {
+  artsGuid_t channelGuid;     /* The channel GUID (key) */
+  volatile u32 satisfyGen;    /* Next generation for satisfy (producer) */
+  volatile u32 consumeGen;    /* Next generation for addDependence (consumer) */
+  ChannelQueueEntry queue[CHANNEL_QUEUE_SIZE];
+  pthread_mutex_t lock;       /* Lock for thread-safe updates */
+} ChannelMetadata;
+
+static ChannelMetadata channelMetaMap[CHANNEL_HASH_SIZE];
+static volatile int channelMapInitialized = 0;
+
+static void initChannelMap(void) {
+  if (__sync_bool_compare_and_swap(&channelMapInitialized, 0, 1)) {
+    for (u32 i = 0; i < CHANNEL_HASH_SIZE; i++) {
+      channelMetaMap[i].channelGuid = NULL_GUID;
+      channelMetaMap[i].satisfyGen = 0;
+      channelMetaMap[i].consumeGen = 0;
+      for (u32 j = 0; j < CHANNEL_QUEUE_SIZE; j++) {
+        channelMetaMap[i].queue[j].eventGuid = NULL_GUID;
+        channelMetaMap[i].queue[j].generation = (u32)-1;  /* Invalid generation */
+      }
+      pthread_mutex_init(&channelMetaMap[i].lock, NULL);
+    }
+  }
+}
+
+static u32 channelHash(artsGuid_t guid) {
+  uint64_t val = (uint64_t)guid;
+  return (u32)(val % CHANNEL_HASH_SIZE);
+}
+
+/* Register a GUID as a channel event */
+static void registerChannelEvent(artsGuid_t channelGuid) {
+  initChannelMap();
+  u32 idx = channelHash(channelGuid);
+  for (u32 i = 0; i < CHANNEL_HASH_SIZE; i++) {
+    u32 probeIdx = (idx + i) % CHANNEL_HASH_SIZE;
+    pthread_mutex_lock(&channelMetaMap[probeIdx].lock);
+    
+    if (channelMetaMap[probeIdx].channelGuid == NULL_GUID) {
+      /* Empty slot - register the channel */
+      channelMetaMap[probeIdx].channelGuid = channelGuid;
+      channelMetaMap[probeIdx].satisfyGen = 0;
+      channelMetaMap[probeIdx].consumeGen = 0;
+      pthread_mutex_unlock(&channelMetaMap[probeIdx].lock);
+      return;
+    }
+    if (channelMetaMap[probeIdx].channelGuid == channelGuid) {
+      /* Already registered */
+      pthread_mutex_unlock(&channelMetaMap[probeIdx].lock);
+      return;
+    }
+    pthread_mutex_unlock(&channelMetaMap[probeIdx].lock);
+  }
+}
+
+/* Get channel metadata for a channel GUID */
+static ChannelMetadata* getChannelMeta(artsGuid_t channelGuid) {
+  initChannelMap();
+  u32 idx = channelHash(channelGuid);
+  for (u32 i = 0; i < CHANNEL_HASH_SIZE; i++) {
+    u32 probeIdx = (idx + i) % CHANNEL_HASH_SIZE;
+    if (channelMetaMap[probeIdx].channelGuid == channelGuid) {
+      return &channelMetaMap[probeIdx];
+    }
+    if (channelMetaMap[probeIdx].channelGuid == NULL_GUID) {
+      return NULL;
+    }
+  }
+  return NULL;
+}
+
+/* Check if a GUID is a channel event */
+static bool isChannelEvent(artsGuid_t guid) {
+  if (guid == NULL_GUID) return false;
+  return getChannelMeta(guid) != NULL;
+}
+
+/*
+ * Get or create event for a specific generation.
+ * If the slot has an event from a different generation (stale), create a fresh one.
+ * This handles the sliding window wrap-around where slot N is reused for 
+ * generation N, N+QUEUE_SIZE, N+2*QUEUE_SIZE, etc.
+ * 
+ * MUST be called with meta->lock held.
+ */
+static artsGuid_t ensureEventForGen(ChannelMetadata *meta, u32 gen) {
+  u32 idx = gen % CHANNEL_QUEUE_SIZE;
+  
+  /* If this slot holds an event from a different generation, it's stale.
+   * The old event was already satisfied and consumed, so create a fresh one. */
+  if (meta->queue[idx].generation != gen) {
+    meta->queue[idx].eventGuid = artsEventCreate(artsGlobalRankId, 1);
+    meta->queue[idx].generation = gen;
+  }
+  
+  return meta->queue[idx].eventGuid;
+}
+
+/*
+ * Channel satisfy: Satisfy event for current producer generation and advance.
+ * 
+ * IMPORTANT: We must mark the slot as "satisfied" while holding the lock
+ * to prevent a race condition where:
+ * 1. Producer gets event for gen N, releases lock
+ * 2. Consumer wraps around to same slot for gen N+QUEUE_SIZE
+ * 3. Consumer sees generation mismatch, creates new event
+ * 4. Producer satisfies old event, but consumer is waiting on new event
+ * 
+ * We mark this by setting generation to a special "consumed" sentinel
+ * after the producer is done with it, or by immediately satisfying.
+ */
+static void channelSatisfy(ChannelMetadata *meta, artsGuid_t dataGuid) {
+  pthread_mutex_lock(&meta->lock);
+  
+  u32 gen = meta->satisfyGen;
+  artsGuid_t evtGuid = ensureEventForGen(meta, gen);
+  meta->satisfyGen++;
+  
+  /* Satisfy the event BEFORE releasing the lock to avoid race with wrap-around */
+  artsEventSatisfySlot(evtGuid, dataGuid, ARTS_EVENT_LATCH_DECR_SLOT);
+  
+  pthread_mutex_unlock(&meta->lock);
+}
+
+/*
+ * Channel consume: Get event for current consumer generation and advance.
+ * Returns the event GUID to add dependence to.
+ */
+static artsGuid_t channelConsume(ChannelMetadata *meta) {
+  pthread_mutex_lock(&meta->lock);
+  
+  u32 gen = meta->consumeGen;
+  artsGuid_t evtGuid = ensureEventForGen(meta, gen);
+  meta->consumeGen++;
+  
+  pthread_mutex_unlock(&meta->lock);
+  
+  return evtGuid;
+}
+
 static u32 collectiveHash(artsGuid_t guid) {
   /* Use unsigned arithmetic to ensure non-negative index */
   uint64_t val = (uint64_t)guid;
@@ -286,36 +463,65 @@ u8 ocrEdtTemplateDestroy(ocrGuid_t guid) {
 
 /*
  * ============================================================================
- * EDT_PROP_FINISH - Limited Support
+ * EDT_PROP_FINISH Support via ARTS Epochs
  * ============================================================================
  *
  * OCR's EDT_PROP_FINISH flag means the output event should fire only after
- * the EDT AND all its child EDTs complete. This requires distributed
- * termination detection.
+ * the EDT AND all its descendant EDTs complete. This is implemented using
+ * ARTS epochs for distributed termination detection.
  *
- * LIMITATION: This implementation does NOT fully support EDT_PROP_FINISH.
- * The output event fires when the parent EDT completes, regardless of
- * whether child EDTs have finished. Applications relying on finish semantics
- * should use explicit synchronization or call ocrShutdown() explicitly.
+ * Implementation:
+ * 1. When EDT_PROP_FINISH is set, we create an ARTS epoch
+ * 2. The epoch is configured to signal a helper EDT when all work completes
+ * 3. The helper EDT then satisfies the OCR output event
+ * 4. Child EDTs automatically join the epoch via artsGetCurrentEpochGuid()
  *
- * The ARTS epoch mechanism has race conditions in single-rank mode that
- * can cause hangs, so we don't use it for termination detection.
+ * Layout of ARTS paramv for finish EDTs:
+ *   paramv[0] = function pointer (ocrEdt_t)
+ *   paramv[1] = original paramc
+ *   paramv[2] = epoch GUID (for finish EDTs) or output event GUID (for regular)
+ *   paramv[3] = flags: bit 0 = isFinishEdt
+ *   paramv[4..4+paramc-1] = original paramv values
  */
 
-/* Thread-local storage - kept for API compatibility but not used */
-static __thread artsGuid_t currentFinishLatch = NULL_GUID;
+#define FINISH_EDT_FLAG 0x1
 
 /*
  * ============================================================================
- * EDT Trampoline
+ * EDT Trampoline and Epoch Termination
  * ============================================================================
  *
  * Layout of ARTS paramv for OCR EDTs:
  *   paramv[0] = function pointer (ocrEdt_t)
  *   paramv[1] = original paramc
- *   paramv[2] = output event GUID to satisfy on completion (NULL_GUID if none)
- *   paramv[3..3+paramc-1] = original paramv values
+ *   paramv[2] = epoch GUID (for finish EDTs) or NULL_GUID
+ *   paramv[3] = output event GUID
+ *   paramv[4] = flags: bit 0 = isFinishEdt
+ *   paramv[5..5+paramc-1] = original paramv values
  */
+
+/*
+ * Helper EDT that runs when an epoch terminates AND the main EDT has completed.
+ * This satisfies the OCR output event after all descendant EDTs complete,
+ * passing through the return value from the main EDT.
+ */
+static void epoch_termination_edt(uint32_t paramc, uint64_t *paramv,
+                                  uint32_t depc, artsEdtDep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+
+  artsGuid_t outputEventGuid = (artsGuid_t)paramv[0];
+  
+  /* depv[0] = epoch termination signal (NULL data)
+   * depv[1] = return value from main EDT (may be NULL or actual GUID) */
+  artsGuid_t returnGuid = (depc > 1) ? depv[1].guid : NULL_GUID;
+
+  /* Satisfy output event with the return value */
+  if (outputEventGuid != NULL_GUID) {
+    artsEventSatisfySlot(outputEventGuid, returnGuid,
+                         ARTS_EVENT_LATCH_DECR_SLOT);
+  }
+}
 
 static void ocr_edt_trampoline(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                                artsEdtDep_t depv[]) {
@@ -323,8 +529,12 @@ static void ocr_edt_trampoline(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 
   ocrEdt_t func = (ocrEdt_t)paramv[0];
   u32 origParamc = (u32)paramv[1];
-  artsGuid_t outputEventGuid = (artsGuid_t)paramv[2];
-  u64 *origParamv = (origParamc > 0) ? &paramv[3] : NULL;
+  artsGuid_t guidOrEpoch = (artsGuid_t)paramv[2];
+  artsGuid_t helperOrOutEvt = (artsGuid_t)paramv[3];
+  u64 flags = paramv[4];
+  u64 *origParamv = (origParamc > 0) ? &paramv[5] : NULL;
+
+  bool isFinishEdt = (flags & FINISH_EDT_FLAG) != 0;
 
   /* Convert artsEdtDep_t to ocrEdtDep_t - keep on stack for better locality */
   ocrEdtDep_t ocrDepv[depc > 0 ? depc : 1];
@@ -335,17 +545,45 @@ static void ocr_edt_trampoline(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     ocrDepv[i].mode = DB_DEFAULT_MODE;
   }
 
+  /* For finish EDTs, start the epoch before calling user function */
+  if (isFinishEdt && guidOrEpoch != NULL_GUID) {
+    artsStartEpoch(guidOrEpoch);
+  }
+
   /* Call the OCR EDT function and capture return value.
    * In OCR, the return value is a GUID that gets passed through the output
    * event. */
   ocrGuid_t returnGuid = func(origParamc, origParamv, depc, ocrDepv);
 
-  /* Satisfy the output event with the return value from the OCR function.
-   * Note: For EDT_PROP_FINISH, this fires immediately when the parent EDT
-   * completes, NOT after all children complete. */
-  if (outputEventGuid != NULL_GUID) {
-    artsEventSatisfySlot(outputEventGuid, returnGuid.guid,
+  /* For regular (non-finish) EDTs, satisfy output event immediately.
+   * helperOrOutEvt is the output event GUID for regular EDTs. */
+  if (!isFinishEdt && helperOrOutEvt != NULL_GUID) {
+    artsEventSatisfySlot(helperOrOutEvt, returnGuid.guid,
                          ARTS_EVENT_LATCH_DECR_SLOT);
+  }
+  
+  /* For finish EDTs: signal the helper EDT slot 1 with the return value.
+   * The helper EDT will combine this with the epoch termination signal
+   * and satisfy the output event when both are received.
+   * helperOrOutEvt is the helper EDT GUID for finish EDTs.
+   * 
+   * If the return value is an event GUID, we add a dependency from that
+   * event to the helper EDT, so the helper receives whatever satisfies
+   * that event (not the event GUID itself). */
+  if (isFinishEdt && helperOrOutEvt != NULL_GUID) {
+    if (returnGuid.guid != NULL_GUID) {
+      artsType_t returnType = artsGuidGetType(returnGuid.guid);
+      if (returnType == ARTS_EVENT || returnType == ARTS_PERSISTENT_EVENT) {
+        /* Return value is an event - add dependency to wait for its data */
+        artsAddDependence(returnGuid.guid, helperOrOutEvt, 1);
+      } else {
+        /* Return value is a datablock or other - signal directly */
+        artsSignalEdt(helperOrOutEvt, 1, returnGuid.guid);
+      }
+    } else {
+      /* NULL return - signal with NULL */
+      artsSignalEdt(helperOrOutEvt, 1, NULL_GUID);
+    }
   }
 }
 
@@ -375,7 +613,6 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
                 u64 *paramv, u32 depc, ocrGuid_t *depv, u16 properties,
                 ocrHint_t *hint, ocrGuid_t *outputEvent) {
   (void)hint;
-  (void)properties; /* EDT_PROP_FINISH not fully supported - see README */
 
   OcrEdtTemplate *templ = (OcrEdtTemplate *)templateGuid.guid;
   if (!templ) {
@@ -387,31 +624,82 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
 
   unsigned int route = artsGlobalRankId;
   artsGuid_t outEvt = NULL_GUID;
+  artsGuid_t epochGuid = NULL_GUID;
+  bool isFinishEdt = (properties & EDT_PROP_FINISH) != 0;
+  bool oevtValid = (properties & EDT_PROP_OEVT_VALID) != 0;
 
-  /* Handle output event - for both regular and finish EDTs.
-   * Note: EDT_PROP_FINISH is NOT fully supported. The output event fires
-   * when the parent EDT completes, not when all children complete. */
+  /* Handle output event creation */
   if (outputEvent != NULL) {
-    outEvt = artsEventCreate(route, 1);
-    outputEvent->guid = outEvt;
+    if (oevtValid) {
+      /* EDT_PROP_OEVT_VALID: use the already-initialized output event */
+      outEvt = outputEvent->guid;
+    } else {
+      /* Create a new output event */
+      outEvt = artsEventCreate(route, 1);
+      outputEvent->guid = outEvt;
+    }
   }
 
-  /* Build the ARTS paramv: [funcPtr, origParamc, outputEvent, origParamv...] */
-  u32 artsParamc = 3 + actualParamc;
+  /*
+   * For EDT_PROP_FINISH: Create an epoch for termination detection.
+   * The epoch will signal a helper EDT when all descendant EDTs complete.
+   * The helper EDT also receives the return value from the main EDT.
+   * When both are received, it satisfies the output event with the return data.
+   */
+  artsGuid_t helperEdtGuid = NULL_GUID;
+  if (isFinishEdt && outEvt != NULL_GUID) {
+    /* Create a helper EDT with 2 dependencies:
+     * - Slot 0: signaled by epoch termination
+     * - Slot 1: signaled by trampoline with return value */
+    u64 helperParams[1];
+    helperParams[0] = (u64)outEvt;  /* Output event to satisfy */
+
+    helperEdtGuid = artsEdtCreate(epoch_termination_edt, route, 1, helperParams, 2);
+
+    /* Create epoch that signals helper EDT slot 0 on termination */
+    createEpoch(&epochGuid, helperEdtGuid, 0);
+  } else if (isFinishEdt) {
+    /* No output event, just create epoch for scoping */
+    createEpoch(&epochGuid, NULL_GUID, 0);
+  }
+
+  /*
+   * Build the ARTS paramv:
+   * [funcPtr, origParamc, epochGuid, helperEdtGuid, flags, origParamv...]
+   *
+   * For regular EDTs: epochGuid = NULL_GUID, helperEdtGuid = output event
+   * For finish EDTs:  epochGuid = epoch GUID, helperEdtGuid = helper EDT GUID
+   */
+  u32 artsParamc = 5 + actualParamc;
   u64 *artsParamv = (u64 *)artsCalloc(artsParamc, sizeof(u64));
   artsParamv[0] = (u64)(uintptr_t)templ->funcPtr;
   artsParamv[1] = (u64)actualParamc;
-  artsParamv[2] = (u64)outEvt;
+  artsParamv[2] = (u64)epochGuid;
+  artsParamv[3] = isFinishEdt ? (u64)helperEdtGuid : (u64)outEvt;
+  artsParamv[4] = isFinishEdt ? FINISH_EDT_FLAG : 0;
   if (actualParamc > 0 && paramv != NULL) {
-    memcpy(&artsParamv[3], paramv, actualParamc * sizeof(u64));
+    memcpy(&artsParamv[5], paramv, actualParamc * sizeof(u64));
   }
 
-  artsGuid_t edtGuid = artsEdtCreate(ocr_edt_trampoline, route, artsParamc,
-                                     artsParamv, actualDepc);
+  artsGuid_t edtGuid;
+
+  /*
+   * For finish EDTs, use artsEdtCreateWithEpoch so the EDT is part of
+   * the current epoch (if any), enabling nested finish scopes.
+   */
+  if (isFinishEdt && epochGuid != NULL_GUID) {
+    edtGuid = artsEdtCreateWithEpoch(ocr_edt_trampoline, route, artsParamc,
+                                     artsParamv, actualDepc, epochGuid);
+  } else {
+    edtGuid = artsEdtCreate(ocr_edt_trampoline, route, artsParamc, artsParamv,
+                            actualDepc);
+  }
 
   artsFree(artsParamv);
 
-  guid->guid = edtGuid;
+  if (guid != NULL) {
+    guid->guid = edtGuid;
+  }
 
   /* Add dependences if provided */
   if (depv != NULL && actualDepc > 0) {
@@ -467,8 +755,18 @@ u8 ocrEventCreate(ocrGuid_t *guid, ocrEventTypes_t eventType, u16 properties) {
   case OCR_EVENT_ONCE_T:
   case OCR_EVENT_STICKY_T:
   case OCR_EVENT_IDEM_T:
-  case OCR_EVENT_CHANNEL_T: /* Channel events treated as sticky for ARTS */
     guid->guid = artsEventCreate(artsGlobalRankId, 1);
+    break;
+
+  case OCR_EVENT_CHANNEL_T:
+    /* Channel events need special handling for multi-generation support.
+     * The channel GUID itself is what we return, and we track internal
+     * state for each generation. */
+    {
+      artsGuid_t channelGuid = artsEventCreate(artsGlobalRankId, 1);
+      guid->guid = channelGuid;
+      registerChannelEvent(channelGuid);
+    }
     break;
 
   case OCR_EVENT_LATCH_T:
@@ -482,13 +780,33 @@ u8 ocrEventCreate(ocrGuid_t *guid, ocrEventTypes_t eventType, u16 properties) {
 }
 
 u8 ocrEventDestroy(ocrGuid_t guid) {
+  /* For persistent/channel events, use regular destroy - the GUID type
+   * will route it appropriately within ARTS */
   artsEventDestroy(guid.guid);
   return 0;
 }
 
 u8 ocrEventSatisfy(ocrGuid_t eventGuid, ocrGuid_t dataGuid) {
+  /*
+   * Per OCR specification:
+   * - ONCE events: destroyed after trigger, but no error if already satisfied
+   * - IDEM events: subsequent satisfactions are ignored (return 0)
+   * - STICKY events: multiple satisfactions should error, but in practice
+   *   many OCR applications expect idempotent behavior for fault tolerance
+   * - CHANNEL events: match satisfy with add dependence calls (multi-use)
+   */
+  
+  /* Check if this is a channel event */
+  ChannelMetadata *meta = getChannelMeta(eventGuid.guid);
+  if (meta != NULL) {
+    /* Channel event - use queue-based satisfy */
+    channelSatisfy(meta, dataGuid.guid);
+    return 0;
+  }
+  
+  /* Regular events - idempotent semantics */
   if (artsIsEventFired(eventGuid.guid)) {
-    return 1;
+    return 0; /* Already satisfied - ignore (IDEM semantics) */
   }
   artsEventSatisfySlot(eventGuid.guid, dataGuid.guid,
                        ARTS_EVENT_LATCH_DECR_SLOT);
@@ -496,8 +814,23 @@ u8 ocrEventSatisfy(ocrGuid_t eventGuid, ocrGuid_t dataGuid) {
 }
 
 u8 ocrEventSatisfySlot(ocrGuid_t eventGuid, ocrGuid_t dataGuid, u32 slot) {
+  /*
+   * Same as ocrEventSatisfy but with explicit slot.
+   * Note: For channel events, the slot parameter is ignored since channels
+   * are single-slot producer-consumer queues.
+   */
+  
+  /* Check if this is a channel event */
+  ChannelMetadata *meta = getChannelMeta(eventGuid.guid);
+  if (meta != NULL) {
+    /* Channel event - use queue-based satisfy (slot is ignored) */
+    channelSatisfy(meta, dataGuid.guid);
+    return 0;
+  }
+  
+  /* Regular events - idempotent semantics */
   if (artsIsEventFired(eventGuid.guid)) {
-    return 1;
+    return 0; /* Already satisfied - ignore */
   }
   artsEventSatisfySlot(eventGuid.guid, dataGuid.guid, slot);
   return 0;
@@ -518,6 +851,24 @@ u8 ocrEventSatisfySlot(ocrGuid_t eventGuid, ocrGuid_t dataGuid, u32 slot) {
  */
 u8 ocrEventCreateParams(ocrGuid_t *guid, ocrEventTypes_t eventType,
                         u16 properties, ocrEventParams_t *params) {
+
+  /* Handle counted events - they fire after nbDeps satisfactions */
+  if (eventType == OCR_EVENT_COUNTED_T && params != NULL) {
+    u32 nbDeps = params->EVENT_COUNTED.nbDeps;
+    
+    /* Handle labeled GUID */
+    if (properties & GUID_PROP_IS_LABELED) {
+      artsGuid_t result = artsEventCreateWithGuid(guid->guid, nbDeps);
+      if (result == NULL_GUID && (properties & GUID_PROP_CHECK)) {
+        return OCR_EGUIDEXISTS;
+      }
+      return 0;
+    }
+    
+    /* Non-labeled: create event with nbDeps count */
+    guid->guid = artsEventCreate(artsGlobalRankId, nbDeps);
+    return 0;
+  }
 
   if (eventType == OCR_EVENT_COLLECTIVE_T && params != NULL) {
     u32 nbContribs = params->EVENT_COLLECTIVE.nbContribs;
@@ -648,10 +999,31 @@ u8 ocrEventCollectiveSatisfySlot(ocrGuid_t eventGuid, void *dataPtr, u32 islot) 
 
 u8 ocrDbCreate(ocrGuid_t *db, void **addr, u64 len, u16 flags, ocrHint_t *hint,
                ocrInDbAllocator_t allocator) {
-  (void)flags;
   (void)hint;
   (void)allocator;
 
+  if (flags & GUID_PROP_IS_LABELED) {
+    /* Labeled GUID: use the GUID already in *db (from ocrGuidFromIndex) */
+    artsGuid_t labeledGuid = db->guid;
+    
+    /* Create DB with the specified GUID */
+    void *data = artsDbCreateWithGuid(labeledGuid, len);
+    if (data == NULL) {
+      /* DB with this GUID may already exist - try to look it up */
+      data = artsRouteTableLookupItem(labeledGuid);
+      if (data != NULL) {
+        /* DB exists - return its data pointer (skip artsDb header) */
+        *addr = (void *)((struct artsDb *)data + 1);
+        return 0;
+      }
+      return 1; /* Failed to create or find DB */
+    }
+    /* artsDbCreateWithGuid returns pointer to data (after header) */
+    *addr = data;
+    return 0;
+  }
+
+  /* Non-labeled: create new DB with auto-generated GUID */
   db->guid = artsDbCreate(addr, len, ARTS_DB_READ);
 
   return 0;
@@ -687,6 +1059,25 @@ u8 ocrAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
       /* Satisfy event with NULL data - use latch decrement for OCR events */
       artsEventSatisfySlot(destination.guid, NULL_GUID,
                            ARTS_EVENT_LATCH_DECR_SLOT);
+    }
+    return 0;
+  }
+
+  /* Check if source is a channel event */
+  ChannelMetadata *meta = getChannelMeta(source.guid);
+  if (meta != NULL) {
+    /* Channel event - consume next event from the queue */
+    artsGuid_t evtGuid = channelConsume(meta);
+    
+    artsType_t dstType = artsGuidGetType(destination.guid);
+    if (dstType == ARTS_EDT) {
+      artsAddDependence(evtGuid, destination.guid, slot);
+    } else if (dstType == ARTS_EVENT) {
+      /* Channel -> Event: need intermediary EDT */
+      u64 helperParamv[1] = {(u64)destination.guid};
+      artsGuid_t helperEdt =
+          artsEdtCreate(event_relay_edt, artsGlobalRankId, 1, helperParamv, 1);
+      artsAddDependence(evtGuid, helperEdt, 0);
     }
     return 0;
   }
