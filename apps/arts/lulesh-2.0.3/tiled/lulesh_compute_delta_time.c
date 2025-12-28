@@ -1,5 +1,5 @@
 /******************************************************************************
- * LULESH Per-Element ARTS Version - Compute Delta Time EDT
+ * LULESH Tiled ARTS Version - Compute Delta Time
  ******************************************************************************/
 #include "lulesh.h"
 #include <math.h>
@@ -10,66 +10,58 @@ extern artsGuid_t timingDataGuids[2];
 extern TimingData *timingDataPtrs[2];
 extern luleshCtx *globalCtx;
 
-// Forward declarations
 void startIteration(int iteration, luleshCtx *ctx);
 
-// Helper function to print final statistics matching baseline format
 static void printFinalStatistics(int iteration, double elapsed_sim_time,
                                  double delta_time, luleshCtx *ctx) {
-  int nx = g_config.edge_elements;
+    int nx = g_config.edge_elements;
 
-  // Calculate elapsed wall clock time
-  uint64_t end_time = artsGetTimeStamp();
-  double elapsed_wall_time =
-      (double)(end_time - g_config.start_time) / 1.0e9; // Convert ns to seconds
+    uint64_t end_time = artsGetTimeStamp();
+    double elapsed_wall_time = (double)(end_time - g_config.start_time) / 1.0e9;
 
-  // Grind time calculation (same as baseline)
-  double grindTime1 =
-      ((elapsed_wall_time * 1.0e6) / iteration) / (nx * nx * nx);
-  double grindTime2 = grindTime1; // Same since single process
+    double grindTime1 = ((elapsed_wall_time * 1.0e6) / iteration) / (nx * nx * nx);
+    double grindTime2 = grindTime1;
 
-  // Get final origin energy
-  int curr_buf = iteration % 2;
-  double origin_energy = elementDataPtrs[curr_buf][0]->energy;
+    int curr_buf = iteration % 2;
+    double origin_energy = elementDataPtrs[curr_buf][0]->energy;
 
-  // Calculate symmetry check values (like baseline)
-  double MaxAbsDiff = 0.0;
-  double TotalAbsDiff = 0.0;
-  double MaxRelDiff = 0.0;
+    double MaxAbsDiff = 0.0;
+    double TotalAbsDiff = 0.0;
+    double MaxRelDiff = 0.0;
 
-  for (int j = 0; j < nx; ++j) {
-    for (int k = j + 1; k < nx; ++k) {
-      double e_jk = elementDataPtrs[curr_buf][j * nx + k]->energy;
-      double e_kj = elementDataPtrs[curr_buf][k * nx + j]->energy;
-      double AbsDiff = fabs(e_jk - e_kj);
-      TotalAbsDiff += AbsDiff;
+    for (int j = 0; j < nx; ++j) {
+        for (int k = j + 1; k < nx; ++k) {
+            double e_jk = elementDataPtrs[curr_buf][j * nx + k]->energy;
+            double e_kj = elementDataPtrs[curr_buf][k * nx + j]->energy;
+            double AbsDiff = fabs(e_jk - e_kj);
+            TotalAbsDiff += AbsDiff;
 
-      if (MaxAbsDiff < AbsDiff)
-        MaxAbsDiff = AbsDiff;
+            if (MaxAbsDiff < AbsDiff)
+                MaxAbsDiff = AbsDiff;
 
-      if (e_kj != 0.0) {
-        double RelDiff = AbsDiff / fabs(e_kj);
-        if (MaxRelDiff < RelDiff)
-          MaxRelDiff = RelDiff;
-      }
+            if (e_kj != 0.0) {
+                double RelDiff = AbsDiff / fabs(e_kj);
+                if (MaxRelDiff < RelDiff)
+                    MaxRelDiff = RelDiff;
+            }
+        }
     }
-  }
 
-  PRINTF("Run completed:  \n");
-  PRINTF("   Problem size        =  %d \n", nx);
-  PRINTF("   MPI tasks           =  1 \n");
-  PRINTF("   Iteration count     =  %d \n", iteration);
-  PRINTF("   Final Origin Energy = %12.6e \n", origin_energy);
+    PRINTF("Run completed:  \n");
+    PRINTF("   Problem size        =  %d \n", nx);
+    PRINTF("   MPI tasks           =  1 \n");
+    PRINTF("   Iteration count     =  %d \n", iteration);
+    PRINTF("   Final Origin Energy = %12.6e \n", origin_energy);
 
-  PRINTF("   Testing Plane 0 of Energy Array on rank 0:\n");
-  PRINTF("        MaxAbsDiff   = %12.6e\n", MaxAbsDiff);
-  PRINTF("        TotalAbsDiff = %12.6e\n", TotalAbsDiff);
-  PRINTF("        MaxRelDiff   = %12.6e\n\n", MaxRelDiff);
+    PRINTF("   Testing Plane 0 of Energy Array on rank 0:\n");
+    PRINTF("        MaxAbsDiff   = %12.6e\n", MaxAbsDiff);
+    PRINTF("        TotalAbsDiff = %12.6e\n", TotalAbsDiff);
+    PRINTF("        MaxRelDiff   = %12.6e\n\n", MaxRelDiff);
 
-  PRINTF("\nElapsed time         = %10.2f (s)\n", elapsed_wall_time);
-  PRINTF("Grind time (us/z/c)  = %10.8g (per dom)  (%10.8g overall)\n",
-         grindTime1, grindTime2);
-  PRINTF("FOM                  = %10.8g (z/s)\n\n", 1000.0 / grindTime2);
+    PRINTF("\nElapsed time         = %10.2f (s)\n", elapsed_wall_time);
+    PRINTF("Grind time (us/z/c)  = %10.8g (per dom)  (%10.8g overall)\n",
+           grindTime1, grindTime2);
+    PRINTF("FOM                  = %10.8g (z/s)\n\n", 1000.0 / grindTime2);
 }
 
 void computeDeltaTimeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]) {
@@ -79,11 +71,9 @@ void computeDeltaTimeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsE
     int prev_buf = (iteration - 1 + 2) % 2;
     int curr_buf = iteration % 2;
     
-    // Get previous delta time and elapsed time
     double prev_dt = timingDataPtrs[prev_buf]->dt;
     double prev_elapsed = timingDataPtrs[prev_buf]->elapsed;
     
-    // Find minimum time constraints across all elements
     double min_courant = 1.0e+20;
     double min_hydro = 1.0e+20;
     
@@ -96,11 +86,9 @@ void computeDeltaTimeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsE
         if (dthydro < min_hydro) min_hydro = dthydro;
     }
     
-    // Constants from context
     double stop_time = ctx->constraints.stop_time;
     double max_delta_time = ctx->constraints.max_delta_time;
     
-    // Compute
     double delta_time = 0;
     double dtfixed = -1.0e-6;
     double deltatimemultlb = 1.1;
@@ -141,19 +129,14 @@ void computeDeltaTimeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsE
     
     double elapsed_time = prev_elapsed + delta_time;
     
-    // Store new delta time
     timingDataPtrs[curr_buf]->dt = delta_time;
     timingDataPtrs[curr_buf]->elapsed = elapsed_time;
     
-    // Check termination condition
     int maxiter = ctx->constraints.maximum_iterations;
     if (iteration >= maxiter || elapsed_time >= stop_time) {
-      // Print final statistics in baseline format
-      printFinalStatistics(iteration, elapsed_time, delta_time, ctx);
-
-      artsShutdown();
+        printFinalStatistics(iteration, elapsed_time, delta_time, ctx);
+        artsShutdown();
     } else {
-        // Start next iteration
         startIteration(iteration + 1, ctx);
     }
 }

@@ -133,7 +133,7 @@ add_ocr_app(tempest_intel-bryan "tempest/refactored/ocr/intel-bryan")
 add_ocr_app(triangle "triangle/refactored/ocr/intel")
 add_ocr_app(XSBench_intel "XSBench/refactored/ocr/intel" "-f Makefile.x86")
 add_ocr_app(XSBench_intel-sharedDB "XSBench/refactored/ocr/intel-sharedDB")
-
+add_ocr_app(lulesh_omp "lulesh-2.0.3/baseline/mpi-omp/doe-original")
 
 # Meta target to build all OCR apps (ALL makes it part of default build)
 add_custom_target(ocr_apps ALL
@@ -199,5 +199,6 @@ add_custom_target(ocr_apps ALL
     triangle
     XSBench_intel
     XSBench_intel-sharedDB
+    lulesh_omp
     COMMENT "Building all OCR applications"
 )

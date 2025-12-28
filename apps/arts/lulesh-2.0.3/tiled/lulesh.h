@@ -1,9 +1,9 @@
 /******************************************************************************
- * LULESH Per-Element ARTS Version
- * Ported from CnC-OCR to ARTS Runtime
+ * LULESH Tiled ARTS Version
+ * Optimized with coarse-grained tiling for reduced task overhead
  ******************************************************************************/
-#ifndef LULESH_ARTS_H
-#define LULESH_ARTS_H
+#ifndef LULESH_TILED_H
+#define LULESH_TILED_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +32,14 @@
 #define DEFAULT_EDGE_ELEMENTS 30
 #endif
 
+// Tiling configuration - elements/nodes processed per task
+#ifndef TILE_SIZE
+#define TILE_SIZE 512
+#endif
+
+#define MAX_ELEMENT_TILES ((MAX_ELEMENTS + TILE_SIZE - 1) / TILE_SIZE)
+#define MAX_NODE_TILES ((MAX_NODES + TILE_SIZE - 1) / TILE_SIZE)
+
 // Precision for cbrt approximation
 #define PRECISION 1.0e-10
 
@@ -46,6 +54,9 @@ typedef struct RuntimeConfig {
     int show_progress;      // -p: show iteration progress
     int quiet;              // -q: quiet mode (minimal output)
     uint64_t start_time;    // Start time in nanoseconds (for timing)
+    int tile_size;          // Elements/nodes per tile
+    int num_element_tiles;  // Number of element tiles
+    int num_node_tiles;     // Number of node tiles
 } RuntimeConfig;
 
 extern RuntimeConfig g_config;
@@ -153,8 +164,8 @@ typedef struct ElementData {
 
 // Gradient data for an element (for monotonic Q calculation)
 typedef struct GradientData {
-  vector position_gradient; // delx_xi, delx_eta, delx_zeta
-  vector velocity_gradient; // delv_xi, delv_eta, delv_zeta
+    vector position_gradient;  // delx_xi, delx_eta, delx_zeta
+    vector velocity_gradient;  // delv_xi, delv_eta, delv_zeta
 } GradientData;
 
 // Timing data for an iteration
@@ -252,29 +263,35 @@ static inline int mapIdToLocalElementId(int map_id) {
     return map_id & 0x7;
 }
 
+// Calculate tile range
+static inline void getTileRange(int tile_id, int total, int tile_size, int *start, int *end) {
+    *start = tile_id * tile_size;
+    *end = *start + tile_size;
+    if (*end > total) *end = total;
+}
+
 /*============================================================================
- * EDT Function Prototypes
+ * EDT Function Prototypes (Tiled versions)
  *============================================================================*/
 
 // Initialization
 void initPerNode(unsigned int nodeId, int argc, char **argv);
 void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char **argv);
 
-// Main computation EDTs
-void computeStressPartialEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeHourglassPartialEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void reduceForceEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeVelocityEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computePositionEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeVolumeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeVolumeDerivativeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeGradientsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeViscosityTermsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeCharacteristicLengthEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeTimeConstraintsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+// Tiled computation EDTs
+void computeStressPartialTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeHourglassPartialTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void reduceForceTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeVelocityTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computePositionTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeVolumeTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeVolumeDerivativeTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeGradientsTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeViscosityTermsTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeEnergyTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeCharacteristicLengthTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void computeTimeConstraintsTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
 void computeDeltaTimeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void produceOutputEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
 
 // Helper functions
 void initGraphContext(luleshCtx *ctx);
@@ -282,4 +299,4 @@ void startIteration(int iteration, luleshCtx *ctx);
 void parseCommandLine(int argc, char **argv);
 void printUsage(const char *progname);
 
-#endif /* LULESH_ARTS_H */
+#endif /* LULESH_TILED_H */

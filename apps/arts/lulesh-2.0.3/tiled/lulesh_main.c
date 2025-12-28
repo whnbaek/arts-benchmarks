@@ -1,6 +1,6 @@
 /******************************************************************************
- * LULESH Per-Element ARTS Version - Main Entry Point
- * Ported from CnC-OCR to ARTS Runtime
+ * LULESH Tiled ARTS Version - Main Entry Point
+ * Optimized with coarse-grained tiling for reduced task overhead
  ******************************************************************************/
 #include "lulesh.h"
 #include <getopt.h>
@@ -13,13 +13,17 @@ artsGuid_t globalCtxGuid = 0;
 luleshCtx *globalCtx = NULL;
 
 // Runtime configuration (from command line)
-RuntimeConfig g_config = {.edge_elements = DEFAULT_EDGE_ELEMENTS,
-                          .max_iterations = 9999999,
-                          .stop_time = 1.0e-2,
-                          .show_progress =
-                              0, // Default off like baseline (use -p to enable)
-                          .quiet = 0,
-                          .start_time = 0};
+RuntimeConfig g_config = {
+    .edge_elements = DEFAULT_EDGE_ELEMENTS,
+    .max_iterations = 9999999,
+    .stop_time = 1.0e-2,
+    .show_progress = 0,
+    .quiet = 0,
+    .start_time = 0,
+    .tile_size = TILE_SIZE,
+    .num_element_tiles = 0,
+    .num_node_tiles = 0
+};
 
 // Per-node arrays (iteration 0 and 1, double buffered)
 artsGuid_t nodeDataGuids[2][MAX_NODES];
@@ -50,52 +54,54 @@ GradientData *gradientDataPtrs[2][MAX_ELEMENTS];
  *============================================================================*/
 
 void printUsage(const char *progname) {
-  printf("Usage: %s [options]\n", progname);
-  printf("Options:\n");
-  printf(
-      "  -s <size>    Problem size (elements per edge, default: %d, max: %d)\n",
-      DEFAULT_EDGE_ELEMENTS, MAX_EDGE_ELEMENTS);
-  printf("  -i <iter>    Maximum iterations (default: 9999999)\n");
-  printf("  -t <time>    Stop time (default: 1.0e-2)\n");
-  printf("  -p           Show iteration progress (default: on)\n");
-  printf("  -q           Quiet mode (minimal output)\n");
-  printf("  -h           Show this help message\n");
+    printf("Usage: %s [options]\n", progname);
+    printf("Options:\n");
+    printf("  -s <size>    Problem size (elements per edge, default: %d, max: %d)\n",
+           DEFAULT_EDGE_ELEMENTS, MAX_EDGE_ELEMENTS);
+    printf("  -i <iter>    Maximum iterations (default: 9999999)\n");
+    printf("  -t <time>    Stop time (default: 1.0e-2)\n");
+    printf("  -T <tile>    Tile size (elements/nodes per task, default: %d)\n", TILE_SIZE);
+    printf("  -p           Show iteration progress (default: on)\n");
+    printf("  -q           Quiet mode (minimal output)\n");
+    printf("  -h           Show this help message\n");
 }
 
 void parseCommandLine(int argc, char **argv) {
     int opt;
-    
-    // Reset optind for ARTS which may have parsed its own args
     optind = 1;
     
-    while ((opt = getopt(argc, argv, "s:i:t:pqh")) != -1) {
+    while ((opt = getopt(argc, argv, "s:i:t:T:pqh")) != -1) {
         switch (opt) {
             case 's':
                 g_config.edge_elements = atoi(optarg);
                 if (g_config.edge_elements < 1) {
-                  fprintf(stderr, "Error: size must be at least 1\n");
-                  g_config.edge_elements = DEFAULT_EDGE_ELEMENTS;
+                    fprintf(stderr, "Error: size must be at least 1\n");
+                    g_config.edge_elements = DEFAULT_EDGE_ELEMENTS;
                 }
                 if (g_config.edge_elements > MAX_EDGE_ELEMENTS) {
-                  fprintf(stderr,
-                          "Error: size cannot exceed %d (recompile with larger "
-                          "MAX_EDGE_ELEMENTS)\n",
-                          MAX_EDGE_ELEMENTS);
-                  g_config.edge_elements = MAX_EDGE_ELEMENTS;
+                    fprintf(stderr, "Error: size cannot exceed %d\n", MAX_EDGE_ELEMENTS);
+                    g_config.edge_elements = MAX_EDGE_ELEMENTS;
                 }
                 break;
             case 'i':
                 g_config.max_iterations = atoi(optarg);
                 if (g_config.max_iterations < 1) {
-                  fprintf(stderr, "Error: iterations must be at least 1\n");
-                  g_config.max_iterations = 1;
+                    fprintf(stderr, "Error: iterations must be at least 1\n");
+                    g_config.max_iterations = 1;
                 }
                 break;
             case 't':
                 g_config.stop_time = atof(optarg);
                 if (g_config.stop_time <= 0.0) {
-                  fprintf(stderr, "Error: stop time must be positive\n");
-                  g_config.stop_time = 1.0e-2;
+                    fprintf(stderr, "Error: stop time must be positive\n");
+                    g_config.stop_time = 1.0e-2;
+                }
+                break;
+            case 'T':
+                g_config.tile_size = atoi(optarg);
+                if (g_config.tile_size < 1) {
+                    fprintf(stderr, "Error: tile size must be at least 1\n");
+                    g_config.tile_size = TILE_SIZE;
                 }
                 break;
             case 'p':
@@ -109,7 +115,6 @@ void parseCommandLine(int argc, char **argv) {
                 printUsage(argv[0]);
                 exit(0);
             default:
-                // Ignore unknown options (may be ARTS options)
                 break;
         }
     }
@@ -129,6 +134,10 @@ void initGraphContext(luleshCtx *ctx) {
     ctx->elements = elements;
     ctx->nodes = nodes;
 
+    // Calculate number of tiles
+    g_config.num_element_tiles = (elements + g_config.tile_size - 1) / g_config.tile_size;
+    g_config.num_node_tiles = (nodes + g_config.tile_size - 1) / g_config.tile_size;
+
     // Initialize the domain constants
     ctx->constants = (struct constants){
         3.0, 4.0/3.0, 1.0e+12, 1.0, 2.0, 0.5, 2.0/3.0,
@@ -143,7 +152,7 @@ void initGraphContext(luleshCtx *ctx) {
         g_config.stop_time, g_config.stop_time, max_iterations
     };
 
-    // Initialize the mesh - use computed values from g_config
+    // Initialize the mesh
     int row_id, column_id, plane_id;
     int element_id, node_id = 0;
 
@@ -245,7 +254,6 @@ void initGraphContext(luleshCtx *ctx) {
                     ctx->domain.initial_position[ctx->mesh.elements_node_neighbors[element_id][7]]
                 };
 
-                // Compute volume
                 double volume = (
                     dot(cross(vertex_sub(c[6], c[3]), vertex_sub(c[2], c[0])),
                         vector_add(vertex_sub(c[3], c[1]), vertex_sub(c[7], c[2]))) +
@@ -298,9 +306,9 @@ void initPerNode(unsigned int nodeId, int argc, char **argv) {
  *============================================================================*/
 
 void initializeIteration0Data(luleshCtx *ctx) {
-    int buf = 0;  // Iteration 0 uses buffer 0
+    int buf = 0;
     
-    // Initialize node data (iteration 0)
+    // Initialize node data
     for (int node_id = 0; node_id < ctx->nodes; node_id++) {
         nodeDataGuids[buf][node_id] = artsDbCreate((void**)&nodeDataPtrs[buf][node_id], 
                                                    sizeof(NodeData), ARTS_DB_READ);
@@ -309,11 +317,10 @@ void initializeIteration0Data(luleshCtx *ctx) {
         nodeDataPtrs[buf][node_id]->velocity = ctx->domain.initial_velocity[node_id];
     }
     
-    // Initialize element data (iteration 0)
+    // Initialize element data
     for (int element_id = 0; element_id < ctx->elements; element_id++) {
         elementDataGuids[buf][element_id] = artsDbCreate((void**)&elementDataPtrs[buf][element_id],
                                                          sizeof(ElementData), ARTS_DB_READ);
-        // Use relative volume = 1.0 for initial state
         elementDataPtrs[buf][element_id]->volume = 1.0;
         elementDataPtrs[buf][element_id]->viscosity = ctx->domain.initial_viscosity[element_id];
         elementDataPtrs[buf][element_id]->pressure = ctx->domain.initial_pressure[element_id];
@@ -337,15 +344,14 @@ void initializeIteration0Data(luleshCtx *ctx) {
     timingDataPtrs[1]->dt = ctx->domain.initial_delta_time;
     timingDataPtrs[1]->elapsed = ctx->domain.initial_delta_time;
 
-    // Initialize gradient data to zero
+    // Initialize gradient data
     for (int element_id = 0; element_id < ctx->elements; element_id++) {
-      gradientDataGuids[buf][element_id] =
-          artsDbCreate((void **)&gradientDataPtrs[buf][element_id],
-                       sizeof(GradientData), ARTS_DB_READ);
-      memset(gradientDataPtrs[buf][element_id], 0, sizeof(GradientData));
+        gradientDataGuids[buf][element_id] = artsDbCreate((void**)&gradientDataPtrs[buf][element_id],
+                                                          sizeof(GradientData), ARTS_DB_READ);
+        memset(gradientDataPtrs[buf][element_id], 0, sizeof(GradientData));
     }
     
-    // Initialize stress/hourglass partials to zero
+    // Initialize stress/hourglass partials
     for (int node_id = 0; node_id < ctx->nodes; node_id++) {
         for (int local_elem = 0; local_elem < 8; local_elem++) {
             int map_id = calcMapId(node_id, local_elem);
@@ -381,9 +387,8 @@ void allocateIterationData(int iteration, luleshCtx *ctx) {
 
     // Allocate gradient data
     for (int element_id = 0; element_id < ctx->elements; element_id++) {
-      gradientDataGuids[buf][element_id] =
-          artsDbCreate((void **)&gradientDataPtrs[buf][element_id],
-                       sizeof(GradientData), ARTS_DB_WRITE);
+        gradientDataGuids[buf][element_id] = artsDbCreate((void**)&gradientDataPtrs[buf][element_id],
+                                                          sizeof(GradientData), ARTS_DB_WRITE);
     }
     
     // Allocate stress/hourglass partials
@@ -399,96 +404,89 @@ void allocateIterationData(int iteration, luleshCtx *ctx) {
 }
 
 /*============================================================================
- * Spawn EDTs for One Iteration
+ * Spawn Tiled EDTs for One Iteration
  *============================================================================*/
 
-// External references for iteration data
-extern artsGuid_t elementDataGuids[2][MAX_ELEMENTS];
-extern ElementData *elementDataPtrs[2][MAX_ELEMENTS];
-extern artsGuid_t timingDataGuids[2];
-extern TimingData *timingDataPtrs[2];
-
 void startIteration(int iteration, luleshCtx *ctx) {
-  // Print iteration info in baseline format: "iteration N, delta time X, energy
-  // Y" Use data from the previous iteration (which just completed)
-  if (!g_config.quiet) {
-    int prev_buf = (iteration - 1 + 2) % 2;
-    double delta_time = timingDataPtrs[prev_buf]->dt;
-    double energy = elementDataPtrs[prev_buf][0]->energy;
-    PRINTF("iteration %d, delta time %f, energy %f\n", iteration, delta_time,
-           energy);
-  }
+    // Print iteration info
+    if (!g_config.quiet) {
+        int prev_buf = (iteration - 1 + 2) % 2;
+        double delta_time = timingDataPtrs[prev_buf]->dt;
+        double energy = elementDataPtrs[prev_buf][0]->energy;
+        PRINTF("iteration %d, delta time %f, energy %f\n", iteration, delta_time, energy);
+    }
 
-  // Show additional progress if requested
-  if (g_config.show_progress && !g_config.quiet) {
-    int prev_buf = (iteration - 1 + 2) % 2;
-    PRINTF("cycle = %d, time = %e, dt=%e\n", iteration,
-           timingDataPtrs[prev_buf]->elapsed, timingDataPtrs[prev_buf]->dt);
-  }
+    if (g_config.show_progress && !g_config.quiet) {
+        int prev_buf = (iteration - 1 + 2) % 2;
+        PRINTF("cycle = %d, time = %e, dt=%e\n", iteration,
+               timingDataPtrs[prev_buf]->elapsed, timingDataPtrs[prev_buf]->dt);
+    }
 
-    // Allocate data blocks for this iteration
     allocateIterationData(iteration, ctx);
     
-    // Phase 1: Stress and Hourglass partials (parallel per element)
-    artsGuid_t phase1DoneEvent = artsEventCreate(0, ctx->elements * 2);
+    int num_elem_tiles = g_config.num_element_tiles;
+    int num_node_tiles = g_config.num_node_tiles;
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase1DoneEvent};
-        artsEdtCreate(computeStressPartialEdt, 0, 3, params, 0);
-        artsEdtCreate(computeHourglassPartialEdt, 0, 3, params, 0);
+    // Phase 1: Stress and Hourglass partials (tiled per element)
+    artsGuid_t phase1DoneEvent = artsEventCreate(0, num_elem_tiles * 2);
+    
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase1DoneEvent};
+        artsEdtCreate(computeStressPartialTiledEdt, 0, 3, params, 0);
+        artsEdtCreate(computeHourglassPartialTiledEdt, 0, 3, params, 0);
     }
     
-    // Phase 2: Reduce force (after phase 1, parallel per node)
-    artsGuid_t phase2DoneEvent = artsEventCreate(0, ctx->nodes);
+    // Phase 2: Reduce force (tiled per node)
+    artsGuid_t phase2DoneEvent = artsEventCreate(0, num_node_tiles);
     
-    for (int node_id = 0; node_id < ctx->nodes; node_id++) {
-        uint64_t params[3] = {iteration, node_id, (uint64_t)phase2DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(reduceForceEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_node_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase2DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(reduceForceTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase1DoneEvent, edtGuid, 0);
     }
     
-    // Phase 3: Velocity computation (after phase 2, parallel per node)
-    artsGuid_t phase3DoneEvent = artsEventCreate(0, ctx->nodes);
+    // Phase 3: Velocity computation (tiled per node)
+    artsGuid_t phase3DoneEvent = artsEventCreate(0, num_node_tiles);
     
-    for (int node_id = 0; node_id < ctx->nodes; node_id++) {
-        uint64_t params[3] = {iteration, node_id, (uint64_t)phase3DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeVelocityEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_node_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase3DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeVelocityTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase2DoneEvent, edtGuid, 0);
     }
     
-    // Phase 4: Position computation (after phase 3, parallel per node)
-    artsGuid_t phase4DoneEvent = artsEventCreate(0, ctx->nodes);
+    // Phase 4: Position computation (tiled per node)
+    artsGuid_t phase4DoneEvent = artsEventCreate(0, num_node_tiles);
     
-    for (int node_id = 0; node_id < ctx->nodes; node_id++) {
-        uint64_t params[3] = {iteration, node_id, (uint64_t)phase4DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computePositionEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_node_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase4DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computePositionTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase3DoneEvent, edtGuid, 0);
     }
     
-    // Phase 5: Volume computation (after phase 4, parallel per element)
-    artsGuid_t phase5DoneEvent = artsEventCreate(0, ctx->elements);
+    // Phase 5: Volume computation (tiled per element)
+    artsGuid_t phase5DoneEvent = artsEventCreate(0, num_elem_tiles);
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase5DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeVolumeEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase5DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeVolumeTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase4DoneEvent, edtGuid, 0);
     }
     
-    // Phase 6: Volume derivative computation (after phase 5, parallel per element)
-    artsGuid_t phase6DoneEvent = artsEventCreate(0, ctx->elements);
+    // Phase 6: Volume derivative (tiled per element)
+    artsGuid_t phase6DoneEvent = artsEventCreate(0, num_elem_tiles);
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase6DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeVolumeDerivativeEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase6DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeVolumeDerivativeTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase5DoneEvent, edtGuid, 0);
     }
     
-    // Phase 7: Gradients computation (after phase 5, parallel per element)
-    artsGuid_t phase7DoneEvent = artsEventCreate(0, ctx->elements);
+    // Phase 7: Gradients computation (tiled per element)
+    artsGuid_t phase7DoneEvent = artsEventCreate(0, num_elem_tiles);
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase7DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeGradientsEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase7DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeGradientsTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase5DoneEvent, edtGuid, 0);
     }
     
@@ -497,30 +495,30 @@ void startIteration(int iteration, luleshCtx *ctx) {
     artsAddDependence(phase6DoneEvent, phase67DoneEvent, ARTS_EVENT_LATCH_DECR_SLOT);
     artsAddDependence(phase7DoneEvent, phase67DoneEvent, ARTS_EVENT_LATCH_DECR_SLOT);
     
-    // Phase 8: Viscosity terms (after phases 6 and 7, parallel per element)
-    artsGuid_t phase8DoneEvent = artsEventCreate(0, ctx->elements);
+    // Phase 8: Viscosity terms (tiled per element)
+    artsGuid_t phase8DoneEvent = artsEventCreate(0, num_elem_tiles);
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase8DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeViscosityTermsEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase8DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeViscosityTermsTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase67DoneEvent, edtGuid, 0);
     }
     
-    // Phase 9: Energy computation (after phase 8, parallel per element)
-    artsGuid_t phase9DoneEvent = artsEventCreate(0, ctx->elements);
+    // Phase 9: Energy computation (tiled per element)
+    artsGuid_t phase9DoneEvent = artsEventCreate(0, num_elem_tiles);
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase9DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeEnergyEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase9DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeEnergyTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase8DoneEvent, edtGuid, 0);
     }
     
-    // Phase 10: Characteristic length (after phase 5, parallel per element)
-    artsGuid_t phase10DoneEvent = artsEventCreate(0, ctx->elements);
+    // Phase 10: Characteristic length (tiled per element)
+    artsGuid_t phase10DoneEvent = artsEventCreate(0, num_elem_tiles);
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase10DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeCharacteristicLengthEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase10DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeCharacteristicLengthTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase5DoneEvent, edtGuid, 0);
     }
     
@@ -530,16 +528,16 @@ void startIteration(int iteration, luleshCtx *ctx) {
     artsAddDependence(phase9DoneEvent, phase6910DoneEvent, ARTS_EVENT_LATCH_DECR_SLOT);
     artsAddDependence(phase10DoneEvent, phase6910DoneEvent, ARTS_EVENT_LATCH_DECR_SLOT);
     
-    // Phase 11: Time constraints (after phases 6, 9, and 10, parallel per element)
-    artsGuid_t phase11DoneEvent = artsEventCreate(0, ctx->elements);
+    // Phase 11: Time constraints (tiled per element)
+    artsGuid_t phase11DoneEvent = artsEventCreate(0, num_elem_tiles);
     
-    for (int element_id = 0; element_id < ctx->elements; element_id++) {
-        uint64_t params[3] = {iteration, element_id, (uint64_t)phase11DoneEvent};
-        artsGuid_t edtGuid = artsEdtCreate(computeTimeConstraintsEdt, 0, 3, params, 1);
+    for (int tile_id = 0; tile_id < num_elem_tiles; tile_id++) {
+        uint64_t params[3] = {iteration, tile_id, (uint64_t)phase11DoneEvent};
+        artsGuid_t edtGuid = artsEdtCreate(computeTimeConstraintsTiledEdt, 0, 3, params, 1);
         artsAddDependence(phase6910DoneEvent, edtGuid, 0);
     }
     
-    // Phase 12: Delta time computation (after phase 11)
+    // Phase 12: Delta time computation (single task)
     {
         uint64_t params[1] = {iteration};
         artsGuid_t edtGuid = artsEdtCreate(computeDeltaTimeEdt, 0, 1, params, 1);
@@ -553,33 +551,28 @@ void startIteration(int iteration, luleshCtx *ctx) {
 
 void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char **argv) {
     if (nodeId == 0 && workerId == 0) {
-        // Parse command line arguments
         parseCommandLine(argc, argv);
 
         int nx = g_config.edge_elements;
         int total_elements = nx * nx * nx;
 
         if (!g_config.quiet) {
-          PRINTF("Running problem size %d^3 per domain until completion\n", nx);
-          PRINTF("Num processors: 1\n");
-          PRINTF("Total number of elements: %d\n\n", total_elements);
-          PRINTF("To run other sizes, use -s <integer>.\n");
-          PRINTF("To run a fixed number of iterations, use -i <integer>.\n");
-          PRINTF("To print out progress, use -p\n");
-          PRINTF("See help (-h) for more options\n\n");
+            PRINTF("Running problem size %d^3 per domain until completion\n", nx);
+            PRINTF("Num processors: 1\n");
+            PRINTF("Total number of elements: %d\n\n", total_elements);
+            PRINTF("To run other sizes, use -s <integer>.\n");
+            PRINTF("To run a fixed number of iterations, use -i <integer>.\n");
+            PRINTF("To print out progress, use -p\n");
+            PRINTF("See help (-h) for more options\n\n");
         }
 
-        // Record start time
         g_config.start_time = artsGetTimeStamp();
 
-        // Create and initialize context
         globalCtxGuid = artsDbCreate((void**)&globalCtx, sizeof(luleshCtx), ARTS_DB_PIN);
         initGraphContext(globalCtx);
         
-        // Initialize iteration 0 data
         initializeIteration0Data(globalCtx);
         
-        // Start first iteration
         startIteration(1, globalCtx);
     }
 }

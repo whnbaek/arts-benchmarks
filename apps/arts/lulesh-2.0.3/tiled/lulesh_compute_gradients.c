@@ -1,5 +1,5 @@
 /******************************************************************************
- * LULESH Per-Element ARTS Version - Compute Gradients EDT
+ * LULESH Tiled ARTS Version - Compute Gradients (Tiled)
  * Implements CalcMonotonicQGradientsForElems
  ******************************************************************************/
 #include "lulesh.h"
@@ -12,15 +12,9 @@ extern artsGuid_t gradientDataGuids[2][MAX_ELEMENTS];
 extern GradientData *gradientDataPtrs[2][MAX_ELEMENTS];
 extern luleshCtx *globalCtx;
 
-void computeGradientsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]) {
-    int iteration = (int)paramv[0];
-    int element_id = (int)paramv[1];
-    artsGuid_t doneEvent = (artsGuid_t)paramv[2];
-    
-    luleshCtx *ctx = globalCtx;
+static void computeGradientsForElement(int iteration, int element_id, luleshCtx *ctx) {
     int curr_buf = iteration % 2;
     
-    // Get node positions and velocities from current iteration
     vertex node_vertices[8];
     vector node_velocities[8];
     for (int local_node_id = 0; local_node_id < 8; local_node_id++) {
@@ -29,10 +23,8 @@ void computeGradientsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsE
         node_velocities[local_node_id] = nodeDataPtrs[curr_buf][node_id]->velocity;
     }
 
-    // Get relative volume
     double volume = elementDataPtrs[curr_buf][element_id]->volume;
 
-    // Constants
     const double ptiny = 1.0e-36;
     double initial_volume = ctx->domain.element_volume[element_id];
 
@@ -111,11 +103,23 @@ void computeGradientsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsE
     vector position_gradient = {delx_xi, delx_eta, delx_zeta};
     vector velocity_gradient = {delv_xi, delv_eta, delv_zeta};
 
-    gradientDataPtrs[curr_buf][element_id]->position_gradient =
-        position_gradient;
-    gradientDataPtrs[curr_buf][element_id]->velocity_gradient =
-        velocity_gradient;
+    gradientDataPtrs[curr_buf][element_id]->position_gradient = position_gradient;
+    gradientDataPtrs[curr_buf][element_id]->velocity_gradient = velocity_gradient;
+}
 
-    // Signal completion
+void computeGradientsTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]) {
+    int iteration = (int)paramv[0];
+    int tile_id = (int)paramv[1];
+    artsGuid_t doneEvent = (artsGuid_t)paramv[2];
+    
+    luleshCtx *ctx = globalCtx;
+    
+    int start, end;
+    getTileRange(tile_id, ctx->elements, g_config.tile_size, &start, &end);
+    
+    for (int element_id = start; element_id < end; element_id++) {
+        computeGradientsForElement(iteration, element_id, ctx);
+    }
+    
     artsEventSatisfySlot(doneEvent, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }

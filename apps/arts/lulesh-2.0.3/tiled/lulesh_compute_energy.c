@@ -1,5 +1,5 @@
 /******************************************************************************
- * LULESH Per-Element ARTS Version - Compute Energy EDT
+ * LULESH Tiled ARTS Version - Compute Energy (Tiled)
  ******************************************************************************/
 #include "lulesh.h"
 #include <math.h>
@@ -10,27 +10,19 @@ extern artsGuid_t timingDataGuids[2];
 extern TimingData *timingDataPtrs[2];
 extern luleshCtx *globalCtx;
 
-void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]) {
-    int iteration = (int)paramv[0];
-    int element_id = (int)paramv[1];
-    artsGuid_t doneEvent = (artsGuid_t)paramv[2];
-    
-    luleshCtx *ctx = globalCtx;
+static void computeEnergyForElement(int iteration, int element_id, luleshCtx *ctx) {
     int prev_buf = (iteration - 1 + 2) % 2;
     int curr_buf = iteration % 2;
     
-    // Get element data from previous iteration
     double previous_energy = elementDataPtrs[prev_buf][element_id]->energy;
     double previous_pressure = elementDataPtrs[prev_buf][element_id]->pressure;
     double previous_viscosity = elementDataPtrs[prev_buf][element_id]->viscosity;
     double previous_volume = elementDataPtrs[prev_buf][element_id]->volume;
     
-    // Get current element data
     double volume = elementDataPtrs[curr_buf][element_id]->volume;
     double qlin = elementDataPtrs[curr_buf][element_id]->q_linear;
     double qquad = elementDataPtrs[curr_buf][element_id]->q_quadratic;
     
-    // Constants
     double eosvmin = ctx->constants.eosvmin;
     double eosvmax = ctx->constants.eosvmax;
     double emin = ctx->constants.emin;
@@ -39,11 +31,8 @@ void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtD
     double c1s = 2.0 / 3.0;
     const double sixth = 1.0 / 6.0;
     
-    // Compute delta volume
     double delv = volume - previous_volume;
     
-    // [ApplyMaterialPropertiesForElems]
-    // Bound the updated and previous relative volumes with eosvmin/max
     if (eosvmin != 0.0) {
         if (volume < eosvmin) volume = eosvmin;
         if (previous_volume < eosvmin) previous_volume = eosvmin;
@@ -53,14 +42,12 @@ void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtD
         if (previous_volume > eosvmax) previous_volume = eosvmax;
     }
     
-    // [EvalEOSForElems]
     double compression = 1.0 / volume - 1.0;
     double vchalf = volume - delv * 0.5;
     double comp_half_step = 1.0 / vchalf - 1.0;
     double work = 0.0;
     double pressure, viscosity, q_tilde;
     
-    // Check for v > eosvmax or v < eosvmin
     if (eosvmin != 0.0) {
         if (volume <= eosvmin) {
             comp_half_step = compression;
@@ -78,7 +65,6 @@ void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtD
     
     if (energy < emin) energy = emin;
     
-    // [CalcPressureForElems]
     double bvc = c1s * (comp_half_step + 1.0);
     double p_half_step = bvc * energy;
     
@@ -106,7 +92,6 @@ void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtD
     if (fabs(energy) < ctx->cutoffs.e) energy = 0.0;
     if (energy < emin) energy = emin;
     
-    // [CalcPressureForElems]
     bvc = c1s * (compression + 1.0);
     pressure = bvc * energy;
     
@@ -132,7 +117,6 @@ void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtD
     if (fabs(energy) < ctx->cutoffs.e) energy = 0.0;
     if (energy < emin) energy = emin;
     
-    // [CalcPressureForElems] - final
     bvc = c1s * (compression + 1.0);
     pressure = bvc * energy;
     
@@ -158,12 +142,25 @@ void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtD
         sound_speed = sqrt(sound_speed);
     }
     
-    // Store results
     elementDataPtrs[curr_buf][element_id]->energy = energy;
     elementDataPtrs[curr_buf][element_id]->pressure = pressure;
     elementDataPtrs[curr_buf][element_id]->viscosity = viscosity;
     elementDataPtrs[curr_buf][element_id]->sound_speed = sound_speed;
+}
+
+void computeEnergyTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]) {
+    int iteration = (int)paramv[0];
+    int tile_id = (int)paramv[1];
+    artsGuid_t doneEvent = (artsGuid_t)paramv[2];
     
-    // Signal completion
+    luleshCtx *ctx = globalCtx;
+    
+    int start, end;
+    getTileRange(tile_id, ctx->elements, g_config.tile_size, &start, &end);
+    
+    for (int element_id = start; element_id < end; element_id++) {
+        computeEnergyForElement(iteration, element_id, ctx);
+    }
+    
     artsEventSatisfySlot(doneEvent, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }

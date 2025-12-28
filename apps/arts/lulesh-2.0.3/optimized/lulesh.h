@@ -1,9 +1,12 @@
 /******************************************************************************
- * LULESH Per-Element ARTS Version
- * Ported from CnC-OCR to ARTS Runtime
+ * LULESH Tiled ARTS Version - Optimized
+ * Key optimizations:
+ *   1. DB Reuse: Pre-allocate all DBs once, reuse across iterations
+ *   2. Phase Fusion: Reduce 12 phases to 5 fused phases
+ *   3. Reduced Events: Minimal synchronization
  ******************************************************************************/
-#ifndef LULESH_ARTS_H
-#define LULESH_ARTS_H
+#ifndef LULESH_H
+#define LULESH_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +21,6 @@
  * Configuration
  *============================================================================*/
 
-// Maximum problem size (compile-time limits for array allocation)
 #ifndef MAX_EDGE_ELEMENTS
 #define MAX_EDGE_ELEMENTS 45
 #endif
@@ -27,25 +29,33 @@
 #define MAX_NODES (MAX_EDGE_NODES * MAX_EDGE_NODES * MAX_EDGE_NODES)
 #define MAX_ELEMENTS (MAX_EDGE_ELEMENTS * MAX_EDGE_ELEMENTS * MAX_EDGE_ELEMENTS)
 
-// Default problem size
 #ifndef DEFAULT_EDGE_ELEMENTS
 #define DEFAULT_EDGE_ELEMENTS 30
 #endif
 
-// Precision for cbrt approximation
+#ifndef TILE_SIZE
+#define TILE_SIZE 512
+#endif
+
+#define MAX_ELEMENT_TILES ((MAX_ELEMENTS + TILE_SIZE - 1) / TILE_SIZE)
+#define MAX_NODE_TILES ((MAX_NODES + TILE_SIZE - 1) / TILE_SIZE)
+
 #define PRECISION 1.0e-10
 
 /*============================================================================
- * Runtime Configuration (from command line)
+ * Runtime Configuration
  *============================================================================*/
 
 typedef struct RuntimeConfig {
-    int edge_elements;      // -s <size>: problem size (elements per edge)
-    int max_iterations;     // -i <iter>: maximum iterations
-    double stop_time;       // -t <time>: stop time
-    int show_progress;      // -p: show iteration progress
-    int quiet;              // -q: quiet mode (minimal output)
-    uint64_t start_time;    // Start time in nanoseconds (for timing)
+    int edge_elements;
+    int max_iterations;
+    double stop_time;
+    int show_progress;
+    int quiet;
+    uint64_t start_time;
+    int tile_size;
+    int num_element_tiles;
+    int num_node_tiles;
 } RuntimeConfig;
 
 extern RuntimeConfig g_config;
@@ -83,17 +93,13 @@ struct cutoffs {
 };
 
 struct domain {
-    // Remains constant
     double node_mass[MAX_NODES];
     double element_mass[MAX_ELEMENTS];
     double element_volume[MAX_ELEMENTS];
-    // Initial per iteration values
     double initial_delta_time;
-    // Initial node values
     vector initial_force[MAX_NODES];
     vector initial_velocity[MAX_NODES];
     vertex initial_position[MAX_NODES];
-    // Initial element
     double initial_volume[MAX_ELEMENTS];
     double initial_viscosity[MAX_ELEMENTS];
     double initial_pressure[MAX_ELEMENTS];
@@ -104,14 +110,14 @@ struct domain {
 struct mesh {
     int number_nodes;
     int number_elements;
-    int nodes_node_neighbors[MAX_NODES][6];           // 6 * number_nodes
-    int nodes_element_neighbors[MAX_NODES][8];        // 8 * number_nodes
-    int elements_node_neighbors[MAX_ELEMENTS][8];     // 8 * number_elements
-    int elements_element_neighbors[MAX_ELEMENTS][6];  // 6 * number_elements
+    int nodes_node_neighbors[MAX_NODES][6];
+    int nodes_element_neighbors[MAX_NODES][8];
+    int elements_node_neighbors[MAX_ELEMENTS][8];
+    int elements_element_neighbors[MAX_ELEMENTS][6];
 };
 
 /*============================================================================
- * LULESH Context - Shared across all EDTs
+ * LULESH Context
  *============================================================================*/
 
 typedef struct luleshCtx {
@@ -125,17 +131,17 @@ typedef struct luleshCtx {
 } luleshCtx;
 
 /*============================================================================
- * Item Data Structures for ARTS DataBlocks
+ * Optimized Per-Node/Element Data - All in one struct for cache efficiency
  *============================================================================*/
 
-// Per-node data for a given iteration
+// Per-node data - kept in contiguous arrays (no DBs per element)
 typedef struct NodeData {
     vector force;
     vertex position;
     vector velocity;
 } NodeData;
 
-// Per-element data for a given iteration
+// Per-element data
 typedef struct ElementData {
     double volume;
     double volume_derivative;
@@ -151,27 +157,58 @@ typedef struct ElementData {
     double dthydro;
 } ElementData;
 
-// Gradient data for an element (for monotonic Q calculation)
+// Gradient data for monotonic Q
 typedef struct GradientData {
-  vector position_gradient; // delx_xi, delx_eta, delx_zeta
-  vector velocity_gradient; // delv_xi, delv_eta, delv_zeta
+    vector position_gradient;
+    vector velocity_gradient;
 } GradientData;
 
-// Timing data for an iteration
+// Timing data
 typedef struct TimingData {
     double dt;
     double elapsed;
 } TimingData;
 
+// Stress/hourglass partials - for force reduction
+typedef struct PartialData {
+    vector stress;
+    vector hourglass;
+} PartialData;
+
 /*============================================================================
- * Global Context Pointer (shared via DB)
+ * Global Context
  *============================================================================*/
 
 extern artsGuid_t globalCtxGuid;
 extern luleshCtx *globalCtx;
 
 /*============================================================================
- * Vector/Vertex Helper Functions
+ * Pre-allocated Data Arrays (NO per-iteration allocation!)
+ * Double-buffered: index 0 = even iterations, index 1 = odd iterations
+ *============================================================================*/
+
+// Single DB for each buffer containing all node data
+extern artsGuid_t allNodeDataGuids[2];
+extern NodeData *allNodeData[2];
+
+// Single DB for each buffer containing all element data  
+extern artsGuid_t allElementDataGuids[2];
+extern ElementData *allElementData[2];
+
+// Single DB for each buffer containing all gradient data
+extern artsGuid_t allGradientDataGuids[2];
+extern GradientData *allGradientData[2];
+
+// Single DB for each buffer containing all partials (node * 8)
+extern artsGuid_t allPartialDataGuids[2];
+extern PartialData *allPartialData[2];
+
+// Timing data
+extern artsGuid_t timingDataGuids[2];
+extern TimingData *timingData[2];
+
+/*============================================================================
+ * Vector/Vertex Helpers
  *============================================================================*/
 
 static inline vertex vertex_new(double x, double y, double z) {
@@ -220,7 +257,6 @@ static inline vector cross(vector a, vector b) {
                     a.x * b.y - a.y * b.x};
 }
 
-// Cube root using Newton's method (for TG compatibility)
 static inline double my_cbrt(double x) {
     if (x == 0.0) return 0.0;
     double ans = 1.0, old = 0.0;
@@ -234,47 +270,46 @@ static inline double my_cbrt(double x) {
 }
 
 /*============================================================================
- * GUID Index Calculation Helpers
+ * Index Calculation Helpers
  *============================================================================*/
 
-// Calculate map_id for stress/hourglass partial storage
 static inline int calcMapId(int node_id, int local_element_id) {
     return (node_id << 3) | local_element_id;
 }
 
-// Extract node_id from map_id
 static inline int mapIdToNodeId(int map_id) {
     return map_id >> 3;
 }
 
-// Extract local_element_id from map_id  
 static inline int mapIdToLocalElementId(int map_id) {
     return map_id & 0x7;
 }
 
+static inline void getTileRange(int tile_id, int total, int tile_size, int *start, int *end) {
+    *start = tile_id * tile_size;
+    *end = *start + tile_size;
+    if (*end > total) *end = total;
+}
+
 /*============================================================================
- * EDT Function Prototypes
+ * Fused EDT Prototypes - Only 5 phases now!
+ *
+ * Phase 1: computePartialsTiledEdt - Stress + Hourglass partials (element-based)
+ * Phase 2: reduceAndKinematicsTiledEdt - Force reduction + Velocity + Position (node-based)
+ * Phase 3: volumeAndDerivedTiledEdt - Volume + VolDeriv + Gradients + CharLen (element-based)
+ * Phase 4: energyAndConstraintsTiledEdt - Viscosity + Energy + TimeConstraints (element-based)
+ * Phase 5: computeDeltaTimeEdt - Single task for delta time
  *============================================================================*/
 
-// Initialization
 void initPerNode(unsigned int nodeId, int argc, char **argv);
 void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char **argv);
 
-// Main computation EDTs
-void computeStressPartialEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeHourglassPartialEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void reduceForceEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeVelocityEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computePositionEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeVolumeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeVolumeDerivativeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeGradientsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeViscosityTermsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeEnergyEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeCharacteristicLengthEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void computeTimeConstraintsEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+// Fused EDTs (5 phases instead of 12)
+void computePartialsTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void reduceAndKinematicsTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void volumeAndDerivedTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
+void energyAndConstraintsTiledEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
 void computeDeltaTimeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
-void produceOutputEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsEdtDep_t depv[]);
 
 // Helper functions
 void initGraphContext(luleshCtx *ctx);
@@ -282,4 +317,4 @@ void startIteration(int iteration, luleshCtx *ctx);
 void parseCommandLine(int argc, char **argv);
 void printUsage(const char *progname);
 
-#endif /* LULESH_ARTS_H */
+#endif /* LULESH_H */
