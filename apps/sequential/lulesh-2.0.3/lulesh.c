@@ -212,31 +212,41 @@ void initialize_domain(RuntimeConfig *config, Domain *dom,
     // Compute scale factor based on problem size
     double scale = pow((double)num_elements / 45.0 / 45.0 / 45.0, 1.0 / 3.0);
     double einit = 3.948746e+7 * scale * scale * scale;
-    
+
     // Initialize nodes
+    // Note: DOE original uses 1.125 as the mesh scale factor (unrelated to
+    // energy scale)
     int node_id = 0;
     for (int plane_id = 0; plane_id < edge_nodes; plane_id++) {
         for (int row_id = 0; row_id < edge_nodes; row_id++) {
             for (int column_id = 0; column_id < edge_nodes; column_id++) {
-                // Set initial position
-                dom->position[node_id] = vertex_new(
-                    scale * 1.125 * column_id / edge_elements,
-                    scale * 1.125 * row_id / edge_elements,
-                    scale * 1.125 * plane_id / edge_elements
-                );
-                
-                // Set node-to-node neighbors
-                dom->nodes_node_neighbors[node_id][0] = (column_id - 1) < 0 ? -2 : node_id - 1;
-                dom->nodes_node_neighbors[node_id][1] = (column_id + 1) >= edge_nodes ? -1 : node_id + 1;
-                dom->nodes_node_neighbors[node_id][2] = (row_id - 1) < 0 ? -2 : node_id - edge_nodes;
-                dom->nodes_node_neighbors[node_id][3] = (row_id + 1) >= edge_nodes ? -1 : node_id + edge_nodes;
-                dom->nodes_node_neighbors[node_id][4] = (plane_id - 1) < 0 ? -2 : node_id - edge_nodes * edge_nodes;
-                dom->nodes_node_neighbors[node_id][5] = (plane_id + 1) >= edge_nodes ? -1 : node_id + edge_nodes * edge_nodes;
-                
-                // Initialize node-to-element neighbors to -1
-                for (int i = 0; i < 8; i++) {
-                    dom->nodes_element_neighbors[node_id][i] = -1;
-                }
+              // Set initial position (mesh coords are NOT scaled by energy
+              // scale)
+              dom->position[node_id] =
+                  vertex_new(1.125 * column_id / edge_elements,
+                             1.125 * row_id / edge_elements,
+                             1.125 * plane_id / edge_elements);
+
+              // Set node-to-node neighbors
+              dom->nodes_node_neighbors[node_id][0] =
+                  (column_id - 1) < 0 ? -2 : node_id - 1;
+              dom->nodes_node_neighbors[node_id][1] =
+                  (column_id + 1) >= edge_nodes ? -1 : node_id + 1;
+              dom->nodes_node_neighbors[node_id][2] =
+                  (row_id - 1) < 0 ? -2 : node_id - edge_nodes;
+              dom->nodes_node_neighbors[node_id][3] =
+                  (row_id + 1) >= edge_nodes ? -1 : node_id + edge_nodes;
+              dom->nodes_node_neighbors[node_id][4] =
+                  (plane_id - 1) < 0 ? -2 : node_id - edge_nodes * edge_nodes;
+              dom->nodes_node_neighbors[node_id][5] =
+                  (plane_id + 1) >= edge_nodes
+                      ? -1
+                      : node_id + edge_nodes * edge_nodes;
+
+              // Initialize node-to-element neighbors to -1
+              for (int i = 0; i < 8; i++) {
+                dom->nodes_element_neighbors[node_id][i] = -1;
+              }
                 
                 node_id++;
             }

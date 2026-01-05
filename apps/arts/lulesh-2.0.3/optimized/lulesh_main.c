@@ -153,22 +153,31 @@ void initGraphContext(luleshCtx *ctx) {
     for (plane_id = 0; plane_id < edge_nodes; plane_id++) {
         for (row_id = 0; row_id < edge_nodes; row_id++) {
             for (column_id = 0; column_id < edge_nodes; column_id++) {
-                ctx->domain.initial_position[node_id] = vertex_new(
-                    scale * 1.125 * column_id / edge_elements,
-                    scale * 1.125 * row_id / edge_elements,
-                    scale * 1.125 * plane_id / edge_elements
-                );
+              // Note: DOE original uses 1.125 as mesh scale factor (NOT scaled
+              // by energy scale)
+              ctx->domain.initial_position[node_id] =
+                  vertex_new(1.125 * column_id / edge_elements,
+                             1.125 * row_id / edge_elements,
+                             1.125 * plane_id / edge_elements);
 
-                ctx->mesh.nodes_node_neighbors[node_id][0] = (column_id - 1) < 0 ? -2 : node_id - 1;
-                ctx->mesh.nodes_node_neighbors[node_id][1] = (column_id + 1) >= edge_nodes ? -1 : node_id + 1;
-                ctx->mesh.nodes_node_neighbors[node_id][2] = (row_id - 1) < 0 ? -2 : node_id - edge_nodes;
-                ctx->mesh.nodes_node_neighbors[node_id][3] = (row_id + 1) >= edge_nodes ? -1 : node_id + edge_nodes;
-                ctx->mesh.nodes_node_neighbors[node_id][4] = (plane_id - 1) < 0 ? -2 : node_id - edge_nodes * edge_nodes;
-                ctx->mesh.nodes_node_neighbors[node_id][5] = (plane_id + 1) >= edge_nodes ? -1 : node_id + edge_nodes * edge_nodes;
+              ctx->mesh.nodes_node_neighbors[node_id][0] =
+                  (column_id - 1) < 0 ? -2 : node_id - 1;
+              ctx->mesh.nodes_node_neighbors[node_id][1] =
+                  (column_id + 1) >= edge_nodes ? -1 : node_id + 1;
+              ctx->mesh.nodes_node_neighbors[node_id][2] =
+                  (row_id - 1) < 0 ? -2 : node_id - edge_nodes;
+              ctx->mesh.nodes_node_neighbors[node_id][3] =
+                  (row_id + 1) >= edge_nodes ? -1 : node_id + edge_nodes;
+              ctx->mesh.nodes_node_neighbors[node_id][4] =
+                  (plane_id - 1) < 0 ? -2 : node_id - edge_nodes * edge_nodes;
+              ctx->mesh.nodes_node_neighbors[node_id][5] =
+                  (plane_id + 1) >= edge_nodes
+                      ? -1
+                      : node_id + edge_nodes * edge_nodes;
 
-                for (int i = 0; i < 8; i++) {
-                    ctx->mesh.nodes_element_neighbors[node_id][i] = -1;
-                }
+              for (int i = 0; i < 8; i++) {
+                ctx->mesh.nodes_element_neighbors[node_id][i] = -1;
+              }
 
                 ctx->domain.initial_force[node_id] = vector_new(0.0, 0.0, 0.0);
                 ctx->domain.initial_velocity[node_id] = vector_new(0.0, 0.0, 0.0);

@@ -115,11 +115,16 @@ void computeDeltaTimeEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc, artsE
     } else {
         delta_time = prev_dt;
     }
-    
-    if (targetdt > delta_time) {
-        targetdt = delta_time;
+
+    /* TRY TO PREVENT VERY SMALL SCALING ON THE NEXT CYCLE */
+    if ((targetdt > delta_time) && (targetdt < (4.0 * delta_time / 3.0))) {
+      targetdt = 2.0 * delta_time / 3.0;
     }
-    
+
+    if (targetdt < delta_time) {
+      delta_time = targetdt;
+    }
+
     double elapsed_time = prev_elapsed + delta_time;
     
     timingData[curr_buf]->dt = delta_time;
