@@ -7,7 +7,3 @@
 [submodule "external/ocr-apps"]
 	path = external/ocr-apps
 	url = git@github.com:whnbaek/ocr-apps.git
-[submodule "external/carts"]
-	path = external/carts
-	url = git@github.com:randreshg/carts.git
-	branch = mlir
